@@ -268,7 +268,7 @@ end
 -- (42.19 has no crown or cape item; the skeleton mask and BlackRobe are the
 -- closest vanilla equivalents.) Bump the version string whenever this list
 -- changes: already-dressed Lords compare against it and re-dress themselves.
-local LORD_ATTIRE_VERSION = "bone-king-1"
+local LORD_ATTIRE_VERSION = "bone-king-2"
 local LORD_ATTIRE = {
     "Base.Hat_HalloweenMaskSkeleton", -- skull face
     "Base.BlackRobe",                 -- flowing black robe (cloak stand-in)
@@ -299,7 +299,13 @@ function Server.ensureLordOutfit(zombie)
     pcall(function() zombie:getWornItems():clear() end)
     for _, itemId in ipairs(LORD_ATTIRE) do
         pcall(function()
-            local item = InventoryItemFactory.CreateItem(itemId)
+            -- Created via the zombie's own inventory rather than
+            -- InventoryItemFactory: that class is not exposed to the
+            -- server-side Lua sandbox (verified the hard way - it indexes
+            -- as nil there), while getInventory():AddItem works in every
+            -- context. Side benefit: the regalia rides in the Lord's
+            -- inventory, so it drops as lootable trophies with the corpse.
+            local item = zombie:getInventory():AddItem(itemId)
             if item then
                 zombie:setWornItem(item:getBodyLocation(), item)
             end
