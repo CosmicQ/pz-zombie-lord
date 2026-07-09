@@ -2,3 +2,5 @@ name=Nocturnal Reign
 poster=poster.png
 description=Zombies fear the sun and rule the night. Between dawn and dusk, any zombie caught standing in direct outdoor sunlight suffers a crippling speed penalty and slowly burns to death; after dusk the horde mutates into fast, sharp-eyed sprinters that hunt by sound and sight. Rarely, a zombie will rise as a Zombie Lord: an alpha predator immune to daylight, marked by a blood-red glow, that senses the closest survivor from hundreds of tiles away and walks slowly, inevitably toward them - silently calling every zombie along the way into a coordinated pack and broadcasting your position to the whole horde the moment it finds you. Every timing, damage, chance and radius value is exposed in Sandbox Options.
 id=NocturnalReign
+url=https://github.com/CosmicQ/pz-zombie-lord
+modversion=1.0.0

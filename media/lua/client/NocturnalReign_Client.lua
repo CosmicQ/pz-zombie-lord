@@ -60,7 +60,7 @@ local function checkDayNightTransition(player)
         end
     else
         if Options.isNightMutationEnabled() then
-            announce(player, "Nightfall falls - the horde grows fast and sharp-eyed.")
+            announce(player, "Night falls - the horde grows fast and sharp-eyed.")
         end
     end
 end
