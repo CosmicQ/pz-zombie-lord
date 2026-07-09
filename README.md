@@ -64,7 +64,7 @@ Every timing, damage, chance, and radius value above is exposed in [Sandbox Opti
    ```sh
    git clone https://github.com/CosmicQ/pz-zombie-lord.git
    ```
-2. Copy (or symlink) the folder into your Zomboid mods directory as `NocturnalReign`:
+2. Copy (or symlink) `Contents/mods/NocturnalReign` into your Zomboid mods directory:
 
    | OS | Mods directory |
    |---|---|
@@ -73,7 +73,7 @@ Every timing, damage, chance, and radius value above is exposed in [Sandbox Opti
    | macOS | `~/Zomboid/mods/` |
 
    ```sh
-   ln -s /path/to/pz-zombie-lord ~/Zomboid/mods/NocturnalReign
+   ln -s /path/to/pz-zombie-lord/Contents/mods/NocturnalReign ~/Zomboid/mods/NocturnalReign
    ```
 3. Enable **Nocturnal Reign** in the in-game **Mods** menu.
 4. Start a new game, or add it to an existing save — both work. Tune everything under **Sandbox Options → Nocturnal Reign**.
@@ -139,19 +139,26 @@ All options live under **Sandbox Options → Nocturnal Reign**.
 
 ## How It Works
 
-The mod is three Lua files, ~1,000 lines, with no assets beyond the poster:
+The mod is three Lua files, ~1,000 lines, with no assets beyond the poster. The repository is laid out in Build 42's versioned Workshop format, so the repo root doubles as a Steam Workshop staging folder:
 
 ```
-media/
-├── sandbox-options.txt                     # Sandbox schema (23 options)
-└── lua/
-    ├── shared/
-    │   ├── NocturnalReign_SandboxOptions.lua   # Config layer + shared day/night logic
-    │   └── Translate/EN/Sandbox_EN.txt         # Option labels & tooltips
-    ├── server/
-    │   └── NocturnalReign_Server.lua           # Authoritative simulation (all gameplay)
-    └── client/
-        └── NocturnalReign_Client.lua           # Cosmetic layer (glow, warnings, banners)
+workshop.txt                                # Steam Workshop metadata
+preview.png                                 # Workshop thumbnail
+Contents/mods/NocturnalReign/
+├── common/                                 # Shared-across-builds folder (empty)
+└── 42/                                     # Build 42 version folder
+    ├── mod.info
+    ├── poster.png
+    └── media/
+        ├── sandbox-options.txt                     # Sandbox schema (23 options)
+        └── lua/
+            ├── shared/
+            │   ├── NocturnalReign_SandboxOptions.lua   # Config layer + day/night logic
+            │   └── Translate/EN/Sandbox_EN.txt         # Option labels & tooltips
+            ├── server/
+            │   └── NocturnalReign_Server.lua           # Authoritative simulation (all gameplay)
+            └── client/
+                └── NocturnalReign_Client.lua           # Cosmetic layer (glow, warnings, banners)
 ```
 
 Design decisions worth knowing about:

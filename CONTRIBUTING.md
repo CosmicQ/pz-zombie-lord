@@ -12,11 +12,11 @@ Open an issue with:
 
 ## Development setup
 
-There is no build step — the repository *is* the mod. The fastest loop:
+There is no build step — the repository *is* the mod, laid out in Build 42's versioned Workshop format (`Contents/mods/NocturnalReign/42/...`). The fastest loop:
 
-1. Symlink the repo into your mods folder:
+1. Symlink the mod folder into your mods directory:
    ```sh
-   ln -s /path/to/pz-zombie-lord ~/Zomboid/mods/NocturnalReign
+   ln -s /path/to/pz-zombie-lord/Contents/mods/NocturnalReign ~/Zomboid/mods/NocturnalReign
    ```
 2. Enable the mod in-game and load a save.
 3. Edit Lua, then reload the save to pick up changes.
@@ -29,6 +29,8 @@ Debug mode (`-debug` launch option) is invaluable: the debug menu lets you edit 
 
 ## Layout and where things live
 
+All paths below are relative to the version folder, `Contents/mods/NocturnalReign/42/`:
+
 | File | Runs on | Contains |
 |---|---|---|
 | `media/lua/shared/NocturnalReign_SandboxOptions.lua` | both | Option accessors, day/night test, ModData key registry |
@@ -38,6 +40,18 @@ Debug mode (`-debug` launch option) is invaluable: the debug menu lets you edit 
 | `media/lua/shared/Translate/EN/Sandbox_EN.txt` | — | Option labels and tooltips |
 
 ¹ Including the embedded server inside a single-player game.
+
+Repo-root files (`workshop.txt`, `preview.png`, and everything outside `Contents/`) are Steam Workshop metadata and project docs — the game never loads them.
+
+## Releasing to the Steam Workshop (maintainers)
+
+The repo root is already shaped as a Workshop staging folder. Symlink it into the game's Workshop directory and use the in-game uploader:
+
+```sh
+ln -s /path/to/pz-zombie-lord ~/Zomboid/Workshop/NocturnalReign
+```
+
+Then **Main menu → Workshop → Create/Update item**. After the first upload the game writes the assigned Workshop `id=` into `workshop.txt` — commit that change so future updates target the same item.
 
 ## Code conventions
 

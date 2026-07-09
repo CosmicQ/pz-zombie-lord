@@ -1,0 +1,15 @@
+version=1
+title=Nocturnal Reign
+description=Zombies fear the sun and rule the night.
+description=
+description=By day, any zombie caught in direct outdoor sunlight slows to a crippled shamble and retreats indoors - clear a street at noon and it stays clear, but every building becomes a den of lurking dead. Optionally, the sun slowly burns exposed zombies to death.
+description=
+description=By night, the horde mutates: every zombie becomes a fast, sharp-eyed, keen-eared sprinter. Daytime is for looting. Nighttime is for barricading the doors.
+description=
+description=And rarely, a zombie rises as a ZOMBIE LORD: an alpha predator immune to daylight, marked by a blood-red glow, dressed in skull mask and bone armour. It senses the closest survivor from hundreds of tiles away and walks slowly, inevitably toward them - silently gathering every zombie along the way into a coordinated pack, broadcasting your position to the whole horde the moment it finds you, calling fog to shield its pack from the sun, opening unlocked doors, and raising nearby corpses back into the fight. Its corpse carries rare high-value loot.
+description=
+description=Every timing, damage, chance and radius value is exposed in Sandbox Options (23 options). Works in new and existing saves. Built for Build 42.
+description=
+description=Source, issues and contributions: https://github.com/CosmicQ/pz-zombie-lord
+tags=Build 42;Balance;Hardmode;Misc
+visibility=public
