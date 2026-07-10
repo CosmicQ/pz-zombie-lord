@@ -53,6 +53,11 @@ Server.lords = setmetatable({}, { __mode = "k" })
 -- drops out on its own, and liveZoneLord() re-validates whatever remains.
 Server.zoneLords = setmetatable({}, { __mode = "v" })
 
+-- "Herald of Rosewood" -> that live mini-boss. Same weak-value pattern.
+-- The key is the human-readable label on purpose: it's unique, and the
+-- diagnostics beacon prints it verbatim.
+Server.zoneMinis = setmetatable({}, { __mode = "v" })
+
 ----------------------------------------------------------------------------
 -- Small utility: try a list of candidate setter names on `obj` until one of
 -- them exists and doesn't error. Returns the name that worked, or nil.
@@ -118,6 +123,79 @@ local function isZoneLiberated(zoneName)
     if record.lordSlainDay == nil then return false end
     local respawnDays = Options.getZoneLordRespawnDays()
     return respawnDays <= 0 or (currentDay() - record.lordSlainDay) < respawnDays
+end
+
+----------------------------------------------------------------------------
+-- Mini-bosses: the Lord's chosen.
+--
+-- Each archetype embodies exactly ONE of the Lord's powers, both as its
+-- own kit and as a stake in the town's Lord fight: while the town's
+-- roster includes a chosen and that chosen is slain, the Lord loses the
+-- matching power (see bossCaps below). Powers are ON by default - a
+-- tier-1 town has no chosen and its Lord keeps the full kit - so the
+-- minis are strategic prep, not a hard gate: thin the court first, or
+-- rush the throne at full strength.
+--
+-- A town fields the first (tier - 1) entries of MINIBOSS_ORDER, so the
+-- roster grows with the difficulty tier and is deterministic per town.
+----------------------------------------------------------------------------
+
+local MINIBOSS_DEFS = {
+    -- The Shepherd gathers the flock: the Lord's escort-and-command power.
+    Shepherd    = { outfit = "Priest",           healthFrac = 0.4, powerName = "flock",
+                    caps = { stalk = true, escort = true } },
+    -- The Herald is the Lord's voice: the spotted-player alert broadcast.
+    Herald      = { outfit = "Cultist",          healthFrac = 0.4, powerName = "voice",
+                    caps = { stalk = true, broadcast = true } },
+    -- The Gravedigger works the soil: Raise the Dead.
+    Gravedigger = { outfit = "Scarecrow",        healthFrac = 0.4, powerName = "grave-craft",
+                    caps = { stalk = true, summon = true } },
+    -- The Brute is the bulwark: no trick, just mass. Its death costs the
+    -- Lord the tier health bonus (checked at the Lord's promotion).
+    Brute       = { outfit = "ArmorTest_Spikey", healthFrac = 0.8, powerName = "bulwark",
+                    caps = { stalk = true } },
+}
+local MINIBOSS_ORDER = { "Shepherd", "Herald", "Gravedigger", "Brute" }
+
+local function zoneMiniRoster(tier)
+    local roster = {}
+    for i = 1, math.min(tier - 1, #MINIBOSS_ORDER) do
+        roster[i] = MINIBOSS_ORDER[i]
+    end
+    return roster
+end
+
+local function miniLabel(zoneName, miniType)
+    return miniType .. " of " .. zoneName
+end
+
+local function isMiniSlain(record, miniType)
+    return record.minis ~= nil
+       and record.minis[miniType] ~= nil
+       and record.minis[miniType].slainDay ~= nil
+end
+
+--- The capability set driving a boss's AI tick (see lordUpdate): which of
+--- the shared powers this particular zombie gets to use right now.
+---   - A mini-boss uses exactly its archetype's caps.
+---   - A Lord uses everything, minus powers whose slain chosen took them
+---     to the grave. Fog is the Lord's signature and is never stripped.
+---   - A wilderness Lord (zone == nil) always has the full kit.
+local function bossCaps(bossZombie, zone)
+    local miniType = bossZombie:getModData()[Keys.MINI_TYPE]
+    if miniType then
+        local def = MINIBOSS_DEFS[miniType]
+        return def and def.caps or { stalk = true }
+    end
+
+    local caps = { stalk = true, fog = true, broadcast = true, escort = true, summon = true }
+    if zone and Options.isMiniBossesEnabled() then
+        local record = getZoneRecord(zone.name)
+        if isMiniSlain(record, "Shepherd")    then caps.escort = false end
+        if isMiniSlain(record, "Herald")      then caps.broadcast = false end
+        if isMiniSlain(record, "Gravedigger") then caps.summon = false end
+    end
+    return caps
 end
 
 ----------------------------------------------------------------------------
@@ -391,6 +469,34 @@ function Server.ensureLordOutfit(zombie)
     ))
 end
 
+--- Mini-boss cousin of ensureLordOutfit: named outfit only, no trophy
+--- regalia (a mini's corpse pays a single loot roll instead). Same
+--- version-marker pattern, so bumping a def's outfit re-dresses minis
+--- from older saves.
+function Server.ensureMiniOutfit(zombie, miniType)
+    local def = MINIBOSS_DEFS[miniType]
+    if not def then return end
+    local md = zombie:getModData()
+    local versionKey = "mini-" .. miniType .. "-1"
+    if md.NR_LordDressed == versionKey then return end
+    md.NR_LordDressed = versionKey
+
+    pcall(function() zombie:setDressInRandomOutfit(false) end)
+    local outfitWorn = "none"
+    for _, outfitName in ipairs({ def.outfit, "Cultist" }) do
+        if pcall(function() zombie:dressInNamedOutfit(outfitName) end) then
+            local current = nil
+            pcall(function() current = zombie:getOutfitName() end)
+            if current == outfitName then
+                outfitWorn = outfitName
+                break
+            end
+        end
+    end
+    pcall(function() zombie:resetModelNextFrame() end)
+    print(string.format("[NocturnalReign] %s dressing: outfit=%s", miniType, outfitWorn))
+end
+
 --- The Lord's bearing: everything about *how* it moves, re-assertable.
 --- Applied at promotion and again every lordUpdate tick, because the
 --- engine's own stat passes (DoZombieStats and friends) can rewrite these
@@ -460,7 +566,13 @@ function Server.promoteToZombieLord(zombie, zone)
     -- of Rosewood while both still respect the sandbox multiplier.
     local multiplier = Options.getLordHealthMultiplier()
     if zone then
-        multiplier = multiplier * (1 + 0.25 * (zone.tier - 1))
+        -- The Brute is the Lord's bulwark: while it stands (or was never
+        -- part of this town's roster), the Lord keeps the tier health
+        -- bonus. Checked at promotion only - a Lord that has already
+        -- risen keeps the health it rose with.
+        if not isMiniSlain(getZoneRecord(zone.name), "Brute") then
+            multiplier = multiplier * (1 + 0.25 * (zone.tier - 1))
+        end
         md[Keys.LORD_ZONE] = zone.name
         Server.zoneLords[zone.name] = zombie
     end
@@ -474,6 +586,35 @@ function Server.promoteToZombieLord(zombie, zone)
         "[NocturnalReign] %s has risen at (%d, %d, %d).",
         zone and ("The Lord of " .. zone.name) or "A Zombie Lord",
         zombie:getX(), zombie:getY(), zombie:getZ()
+    ))
+end
+
+--- Mini-boss promotion. Minis are always zone-bound - they exist only as
+--- a town Lord's court - and share the Lords' AI loop (Server.lords),
+--- with bossCaps() limiting each to its archetype's single power.
+function Server.promoteToMiniBoss(zombie, zone, miniType)
+    local def = MINIBOSS_DEFS[miniType]
+    if not def then return end
+    local md = zombie:getModData()
+    md[Keys.MINI_TYPE] = miniType
+    md[Keys.LORD_ZONE] = zone.name
+
+    -- A fraction of the Lord's multiplier (Brute the biggest): real
+    -- fights, but never the same weight as the throne itself. Spawn
+    -- health is recorded for the feign-death trigger in lordUpdate.
+    local bossHealth = zombie:getHealth()
+        * math.max(2, Options.getLordHealthMultiplier() * def.healthFrac)
+    zombie:setHealth(bossHealth)
+    md[Keys.SPAWN_HEALTH] = bossHealth
+
+    Server.ensureMiniOutfit(zombie, miniType)
+    applyLordBearing(zombie)
+
+    Server.lords[zombie] = true
+    Server.zoneMinis[miniLabel(zone.name, miniType)] = zombie
+    print(string.format(
+        "[NocturnalReign] The %s has risen at (%d, %d, %d).",
+        miniLabel(zone.name, miniType), zombie:getX(), zombie:getY(), zombie:getZ()
     ))
 end
 
@@ -717,6 +858,37 @@ local function lordUpdate(lordZombie)
         return
     end
 
+    -- Feign death: once per life, a chosen that drops to half health or
+    -- gets knocked off its feet collapses among the dead. setFakeDead is
+    -- the vanilla-sanctioned live toggle (the debug context menu uses
+    -- exactly this call); the engine's FakeDeadZombieState then owns the
+    -- collapse, the stillness, and the ambush lunge when someone walks up
+    -- to "loot the corpse". While it plays dead we run none of its AI -
+    -- pathing orders or bearing re-asserts would blow the act.
+    local bossMd = lordZombie:getModData()
+    local bossMiniType = bossMd[Keys.MINI_TYPE]
+    if bossMiniType then
+        local playingDead = false
+        pcall(function() playingDead = lordZombie:isFakeDead() end)
+        if playingDead then return end
+
+        if not bossMd[Keys.FEIGN_USED] then
+            local spawnHealth = bossMd[Keys.SPAWN_HEALTH]
+            local knocked = false
+            pcall(function() knocked = lordZombie:isKnockedDown() end)
+            if knocked or (spawnHealth and lordZombie:getHealth() <= spawnHealth * 0.5) then
+                bossMd[Keys.FEIGN_USED] = true
+                if pcall(function() lordZombie:setFakeDead(true) end) then
+                    print(string.format(
+                        "[NocturnalReign] The %s collapses among the dead...",
+                        miniLabel(bossMd[Keys.LORD_ZONE] or "wilds", bossMiniType)
+                    ))
+                    return
+                end
+            end
+        end
+    end
+
     -- Re-assert gait + cognition once a second; see applyLordBearing's
     -- doc comment for why this can't be set-once.
     applyLordBearing(lordZombie)
@@ -729,6 +901,11 @@ local function lordUpdate(lordZombie)
     local zoneName = lordZombie:getModData()[Keys.LORD_ZONE]
     if zoneName then zone = Zones.byName(zoneName) end
 
+    -- Which powers THIS boss wields right now: a mini-boss gets its one
+    -- archetype power; a Lord gets everything its town's slain chosen
+    -- haven't taken to the grave. See bossCaps.
+    local caps = bossCaps(lordZombie, zone)
+
     local lx, ly, lz = lordZombie:getX(), lordZombie:getY(), lordZombie:getZ()
     local commandRadius = Options.getLordCommandRadius()
 
@@ -738,7 +915,9 @@ local function lordUpdate(lordZombie)
 
     if seesPlayer then
         px, py, pz = target:getX(), target:getY(), target:getZ()
-        addSound(lordZombie, px, py, pz, Options.getLordAlertRadius(), 100)
+        if caps.broadcast then
+            addSound(lordZombie, px, py, pz, Options.getLordAlertRadius(), 100)
+        end
 
         -- The Lord leads from the front: an explicit charge order each tick
         -- so it can never idle in place while its horde does the fighting.
@@ -751,7 +930,7 @@ local function lordUpdate(lordZombie)
         -- in-game hours) is monotonic, unlike getDay() which is merely the
         -- day-of-month and wraps at month boundaries; it also survives
         -- server restarts/save reloads without extra bookkeeping.
-        if Options.isHordeSummonEnabled() then
+        if caps.summon and Options.isHordeSummonEnabled() then
             local md = lordZombie:getModData()
             local today = math.floor(getGameTime():getWorldAgeHours() / 24)
             local lastSummon = md[Keys.LAST_SUMMON_DAY]
@@ -767,7 +946,9 @@ local function lordUpdate(lordZombie)
         -- zombie in earshot to walk with it exactly as they would to a car
         -- horn. Because it re-fires every tick from the Lord's current
         -- position, the gathered pack flows along behind it as it moves.
-        addSound(lordZombie, lx, ly, lz, commandRadius, 40)
+        if caps.escort then
+            addSound(lordZombie, lx, ly, lz, commandRadius, 40)
+        end
 
         -- Long-range prey sense: walk slowly toward the closest living
         -- player within LordSeekRadius (default 400 tiles - roughly max
@@ -776,7 +957,7 @@ local function lordUpdate(lordZombie)
         -- and drifts that way, horde in tow, until the engine's normal
         -- senses acquire a real target and the branch above takes over.
         -- A territorial Lord only senses prey inside its leash band.
-        local prey = findClosestPlayer(lx, ly, Options.getLordSeekRadius())
+        local prey = caps.stalk and findClosestPlayer(lx, ly, Options.getLordSeekRadius()) or nil
         if prey and zone and not Zones.containsWithMargin(zone, prey:getX(), prey:getY(), ZONE_LEASH_MARGIN) then
             prey = nil
         end
@@ -794,33 +975,41 @@ local function lordUpdate(lordZombie)
     local list = cell:getZombieList()
     if not list then return end
 
-    local radiusSq = commandRadius * commandRadius
-    for i = 0, list:size() - 1 do
-        local other = list:get(i)
-        if other and other ~= lordZombie and not other:isDead() and not isZombieLord(other) then
-            local dx, dy = other:getX() - lx, other:getY() - ly
-            if (dx * dx + dy * dy) <= radiusSq then
-                other:getModData()[Keys.COMMANDED_BY_LORD] = true
-                -- Explicit orders beat sound lures for coordination. Only
-                -- zombies without their own target are commanded - anything
-                -- already fighting keeps fighting. The +/-3 tile jitter
-                -- spreads the pack into a loose formation instead of a
-                -- single-file conga line onto one square.
-                if not other:getTarget() then
-                    local jx, jy = ZombRand(7) - 3, ZombRand(7) - 3
-                    if seesPlayer then
-                        -- Swarm order: converge on the player's position.
-                        pcall(function() other:pathToLocationF(px + jx, py + jy, pz) end)
-                    else
-                        -- Escort order: form a defensive pack on the Lord.
-                        pcall(function() other:pathToLocationF(lx + jx, ly + jy, lz) end)
+    -- Swarm orders ride on the broadcast power, escort orders on the
+    -- flock power; a boss with neither commands no one.
+    local givesOrders = (seesPlayer and caps.broadcast) or (not seesPlayer and caps.escort)
+    if givesOrders then
+        local radiusSq = commandRadius * commandRadius
+        for i = 0, list:size() - 1 do
+            local other = list:get(i)
+            if other and other ~= lordZombie and not other:isDead()
+                    and not isZombieLord(other) and not other:getModData()[Keys.MINI_TYPE] then
+                local dx, dy = other:getX() - lx, other:getY() - ly
+                if (dx * dx + dy * dy) <= radiusSq then
+                    other:getModData()[Keys.COMMANDED_BY_LORD] = true
+                    -- Explicit orders beat sound lures for coordination. Only
+                    -- zombies without their own target are commanded - anything
+                    -- already fighting keeps fighting. The +/-3 tile jitter
+                    -- spreads the pack into a loose formation instead of a
+                    -- single-file conga line onto one square.
+                    if not other:getTarget() then
+                        local jx, jy = ZombRand(7) - 3, ZombRand(7) - 3
+                        if seesPlayer then
+                            -- Swarm order: converge on the player's position.
+                            pcall(function() other:pathToLocationF(px + jx, py + jy, pz) end)
+                        else
+                            -- Escort order: form a defensive pack on the Lord.
+                            pcall(function() other:pathToLocationF(lx + jx, ly + jy, lz) end)
+                        end
                     end
                 end
             end
         end
     end
 
-    return seesPlayer
+    -- Only a full Lord's engagement calls the fog; a cornered mini fights
+    -- under an open sky.
+    return seesPlayer and caps.fog == true
 end
 
 ----------------------------------------------------------------------------
@@ -938,6 +1127,34 @@ local LORD_LOOT_BASE_ROLLS = 2
 local function onZombieDead(zombie)
     if isClient() then return end
     local md = zombie:getModData()
+
+    -- A fallen mini-boss: record the broken power (bossCaps reads this to
+    -- strip it from the town's Lord) and pay a single loot bundle.
+    local miniType = md[Keys.MINI_TYPE]
+    if miniType then
+        local zoneName = md[Keys.LORD_ZONE]
+        if zoneName then
+            local record = getZoneRecord(zoneName)
+            record.minis = record.minis or {}
+            record.minis[miniType] = record.minis[miniType] or {}
+            record.minis[miniType].slainDay = currentDay()
+            local def = MINIBOSS_DEFS[miniType]
+            print(string.format(
+                "[NocturnalReign] The %s has fallen - the Lord of %s loses its %s.",
+                miniLabel(zoneName, miniType), zoneName, def and def.powerName or "power"
+            ))
+        end
+        if Options.isLordLootEnabled() then
+            local inv = zombie:getInventory()
+            if inv then
+                for _, itemId in ipairs(LORD_LOOT_TABLE[ZombRand(#LORD_LOOT_TABLE) + 1]) do
+                    pcall(function() inv:AddItem(itemId) end)
+                end
+            end
+        end
+        return
+    end
+
     if not md[Keys.IS_LORD] then return end
 
     -- Liberation bookkeeping first, independent of the loot toggle: a
@@ -1002,22 +1219,26 @@ Events.OnZombieDead.Add(onZombieDead)
 -- - lives in lordUpdate / promoteToZombieLord / onZombieDead above.
 ----------------------------------------------------------------------------
 
---- The zone's live Lord, or nil. Re-validates the weak reference: a Lord
---- whose cell unloaded is no longer simulated (getCurrentSquare goes nil)
---- and must not block a fresh spawn when players return later. Every
---- method call is pcall-guarded because the reference can go stale between
---- GC passes.
-local function liveZoneLord(zoneName)
-    local zombie = Server.zoneLords[zoneName]
+--- The live boss tracked under map[key], or nil. Re-validates the weak
+--- reference: a boss whose cell unloaded is no longer simulated
+--- (getCurrentSquare goes nil) and must not block a fresh spawn when
+--- players return later. Every method call is pcall-guarded because the
+--- reference can go stale between GC passes.
+local function liveTrackedBoss(map, key)
+    local zombie = map[key]
     if not zombie then return nil end
     local ok, alive = pcall(function()
         return not zombie:isDead() and zombie:getCurrentSquare() ~= nil
     end)
     if not ok or not alive then
-        Server.zoneLords[zoneName] = nil
+        map[key] = nil
         return nil
     end
     return zombie
+end
+
+local function liveZoneLord(zoneName)
+    return liveTrackedBoss(Server.zoneLords, zoneName)
 end
 
 -- How far from the triggering player a zone Lord materialises: far enough
@@ -1066,6 +1287,21 @@ local function trySpawnZoneLord(cell, zone, player)
     return true
 end
 
+local function trySpawnZoneMini(cell, zone, player, miniType)
+    local square = findZoneLordSpawnSquare(cell, player, zone)
+    if not square then return false end
+
+    -- Male for the same reason as the Lord: the ArmorTest_* outfits ship
+    -- no female variants, and the mini's silhouette IS its identity.
+    local def = MINIBOSS_DEFS[miniType]
+    local zombie = spawnZombieAt(cell, square, nil, def.outfit, 0)
+    if not zombie then return false end
+
+    zombie:getModData()[Keys.INITIALIZED] = true
+    Server.promoteToMiniBoss(zombie, zone, miniType)
+    return true
+end
+
 -- A Lord instance can be lost without dying: the player outruns it, its
 -- chunk unloads, and the engine virtualizes the zombie - liveZoneLord()
 -- then reports nothing even though the Lord still exists out there in the
@@ -1080,8 +1316,60 @@ end
 -- deaths liberates the town.
 local ZONE_LORD_REPLACE_GRACE_HOURS = 12
 
+--- Ensure one zone's full boss roster - the Lord plus its (tier - 1)
+--- chosen - exists as the campaign dictates. At most one boss rises per
+--- zone per sweep, so a town's court trickles in over the first few
+--- minutes instead of materialising as an instant dogpile.
+local function ensureZoneBosses(cell, zone, player, nowHours)
+    local record = getZoneRecord(zone.name)
+
+    -- The throne first.
+    if liveZoneLord(zone.name) then
+        record.lordLastSeenHours = nowHours
+    else
+        -- A slain Lord whose respawn clock has run out rises again:
+        -- clearing the slain-day puts the town back under its reign, and
+        -- the whole court returns with the throne (minis reset too).
+        if record.lordSlainDay ~= nil and not isZoneLiberated(zone.name) then
+            record.lordSlainDay = nil
+            record.lordLastSeenHours = nil
+            record.minis = nil
+        end
+        local lostRecently = record.lordLastSeenHours ~= nil
+            and (nowHours - record.lordLastSeenHours) < ZONE_LORD_REPLACE_GRACE_HOURS
+        if record.lordSlainDay == nil and not lostRecently then
+            if trySpawnZoneLord(cell, zone, player) then
+                record.lordLastSeenHours = nowHours
+                return
+            end
+        end
+    end
+
+    -- The court: only while the town is unliberated. A slain mini stays
+    -- slain for the rest of the reign - that is the whole point of
+    -- killing it - and the roster resets only when the reign does.
+    if not Options.isMiniBossesEnabled() or record.lordSlainDay ~= nil then return end
+    record.minis = record.minis or {}
+    for _, miniType in ipairs(zoneMiniRoster(zone.tier)) do
+        local mini = record.minis[miniType] or {}
+        record.minis[miniType] = mini
+        if liveTrackedBoss(Server.zoneMinis, miniLabel(zone.name, miniType)) then
+            mini.lastSeenHours = nowHours
+        elseif mini.slainDay == nil then
+            local lostRecently = mini.lastSeenHours ~= nil
+                and (nowHours - mini.lastSeenHours) < ZONE_LORD_REPLACE_GRACE_HOURS
+            if not lostRecently then
+                if trySpawnZoneMini(cell, zone, player, miniType) then
+                    mini.lastSeenHours = nowHours
+                    return
+                end
+            end
+        end
+    end
+end
+
 --- Once per sweep: for every player standing inside a zone, make sure that
---- zone's Lord exists if the campaign says it should.
+--- zone's bosses exist if the campaign says they should.
 local function updateZoneLords(cell)
     if not Options.isZombieLordEnabled() or not Options.isZoneLordsEnabled() then return end
 
@@ -1095,25 +1383,7 @@ local function updateZoneLords(cell)
         if player and not player:isDead() then
             local zone = Zones.zoneAt(player:getX(), player:getY())
             if zone then
-                local record = getZoneRecord(zone.name)
-                if liveZoneLord(zone.name) then
-                    record.lordLastSeenHours = nowHours
-                else
-                    -- A slain Lord whose respawn clock has run out rises
-                    -- again: clearing the slain-day puts the town back
-                    -- under its reign and re-arms the spawn below.
-                    if record.lordSlainDay ~= nil and not isZoneLiberated(zone.name) then
-                        record.lordSlainDay = nil
-                        record.lordLastSeenHours = nil
-                    end
-                    local lostRecently = record.lordLastSeenHours ~= nil
-                        and (nowHours - record.lordLastSeenHours) < ZONE_LORD_REPLACE_GRACE_HOURS
-                    if record.lordSlainDay == nil and not lostRecently then
-                        if trySpawnZoneLord(cell, zone, player) then
-                            record.lordLastSeenHours = nowHours
-                        end
-                    end
-                end
+                ensureZoneBosses(cell, zone, player, nowHours)
             end
         end
     end
@@ -1154,16 +1424,18 @@ local function mainSweep()
             tostring(Options.isDaytimeHour(getGameTime():getHour())),
             tostring(Options.getZombieLordSpawnChancePercent())
         ))
-        -- Where each tracked territorial Lord currently stands - a QA
-        -- beacon for finding a slow walker in a big town (positions move,
-        -- the one-time "has risen" line goes stale within minutes).
-        for zoneName, lord in pairs(Server.zoneLords) do
+        -- Where each tracked boss currently stands - a QA beacon for
+        -- finding a slow walker in a big town (positions move, the
+        -- one-time "has risen" line goes stale within minutes).
+        local function beacon(label, boss)
             local ok, position = pcall(function()
-                return string.format("(%d, %d, %d)", lord:getX(), lord:getY(), lord:getZ())
+                return string.format("(%d, %d, %d)", boss:getX(), boss:getY(), boss:getZ())
             end)
-            print(string.format("[NocturnalReign] the Lord of %s stands at %s",
-                zoneName, ok and position or "parts unknown"))
+            print(string.format("[NocturnalReign] the %s stands at %s",
+                label, ok and position or "parts unknown"))
         end
+        for zoneName, lord in pairs(Server.zoneLords) do beacon("Lord of " .. zoneName, lord) end
+        for label, mini in pairs(Server.zoneMinis) do beacon(label, mini) end
     end
 
     local hour = getGameTime():getHour()
@@ -1185,31 +1457,41 @@ local function mainSweep()
         if zombie and not zombie:isDead() then
             initZombieIfNeeded(zombie)
 
-            if isZombieLord(zombie) then
-                -- Immune to both daytime photophobia and the nightfall
-                -- mutation pass: the Lord manages its own stats once, in
-                -- Server.promoteToZombieLord(), and Module 3 handles its
-                -- ongoing behaviour separately above.
+            local miniType = zombie:getModData()[Keys.MINI_TYPE]
+            if isZombieLord(zombie) or miniType then
+                -- Bosses are immune to both daytime photophobia and the
+                -- nightfall mutation pass: they manage their own stats at
+                -- promotion, and Module 3 drives their ongoing behaviour.
                 --
                 -- Re-registering here (idempotent - it's just a table key)
-                -- is what revives a Lord's AI after a save reload: the
-                -- IS_LORD flag persists in ModData, but Server.lords is
-                -- in-memory only and starts empty every session. Same for
-                -- a territorial Lord's zone binding, or updateZoneLords
-                -- would spawn a duplicate over a Lord that merely survived
-                -- a reload.
+                -- is what revives a boss's AI after a save reload: the
+                -- ModData flags persist, but the in-memory registries
+                -- start empty every session. It also refreshes the
+                -- sighting clock whenever a boss is in ANY loaded cell,
+                -- not only while a player stands in its zone - otherwise
+                -- the timestamp goes stale the moment players leave and a
+                -- revisit hours later spawns a duplicate over a boss that
+                -- was never lost.
                 Server.lords[zombie] = true
                 local lordZone = zombie:getModData()[Keys.LORD_ZONE]
                 if lordZone then
-                    Server.zoneLords[lordZone] = zombie
-                    -- Refresh the sighting clock whenever the Lord is in
-                    -- ANY loaded cell, not only while a player stands in
-                    -- its zone - otherwise the timestamp goes stale the
-                    -- moment players leave and a revisit hours later
-                    -- spawns a duplicate over a Lord that was never lost.
-                    getZoneRecord(lordZone).lordLastSeenHours = getGameTime():getWorldAgeHours()
+                    local record = getZoneRecord(lordZone)
+                    local nowHours = getGameTime():getWorldAgeHours()
+                    if miniType then
+                        Server.zoneMinis[miniLabel(lordZone, miniType)] = zombie
+                        record.minis = record.minis or {}
+                        record.minis[miniType] = record.minis[miniType] or {}
+                        record.minis[miniType].lastSeenHours = nowHours
+                    else
+                        Server.zoneLords[lordZone] = zombie
+                        record.lordLastSeenHours = nowHours
+                    end
                 end
-                Server.ensureLordOutfit(zombie)
+                if miniType then
+                    Server.ensureMiniOutfit(zombie, miniType)
+                else
+                    Server.ensureLordOutfit(zombie)
+                end
             elseif sunThreat then
                 if photophobiaOn and isZombieInDirectSunlight(zombie) then
                     applyPhotophobia(zombie)

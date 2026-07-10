@@ -83,8 +83,12 @@ end
 --      Lord crosses onto a new tile (the standard follow-light pattern).
 ----------------------------------------------------------------------------
 
-local LORD_GLOW_R, LORD_GLOW_G, LORD_GLOW_B = 0.9, 0.08, 0.08
-local LORD_GLOW_RADIUS = 8 -- tiles of red light around the Lord (subtle by day, striking at night)
+-- Lords burn blood-red; their chosen (mini-bosses) smoulder ember-amber -
+-- unmistakably "boss", unmistakably not the throne. r/g/b tint the ground
+-- light, hr/hg/hb the sprite highlight.
+local LORD_GLOW = { r = 0.9, g = 0.08, b = 0.08, hr = 1.0, hg = 0.1, hb = 0.1 }
+local MINI_GLOW = { r = 0.9, g = 0.45, b = 0.05, hr = 1.0, hg = 0.55, hb = 0.1 }
+local LORD_GLOW_RADIUS = 8 -- tiles of light around a boss (subtle by day, striking at night)
 
 -- [zombie] = { light = IsoLightSource, x, y, z } for every currently-glowing
 -- Lord. Strong keys on purpose: entries are removed explicitly by the scan's
@@ -107,10 +111,11 @@ end
 --- Kahlua swallows pure-Lua errors inside pcall without logging, so a
 --- broken cosmetic looks like "the Lord looks normal" with a clean console
 --- unless we print a receipt ourselves.
-local function applyLordHighlight(zombie)
-    local colorOk = pcall(function() zombie:setHighlightColor(1.0, 0.1, 0.1, 1.0) end)
+local function applyLordHighlight(zombie, glow)
+    glow = glow or LORD_GLOW
+    local colorOk = pcall(function() zombie:setHighlightColor(glow.hr, glow.hg, glow.hb, 1.0) end)
     if not colorOk then
-        colorOk = pcall(function() zombie:setHighlightColor(ColorInfo.new(1.0, 0.1, 0.1, 1.0)) end)
+        colorOk = pcall(function() zombie:setHighlightColor(ColorInfo.new(glow.hr, glow.hg, glow.hb, 1.0)) end)
     end
     local flagOk = pcall(function() zombie:setHighlighted(true) end)
     if not flagOk then
@@ -119,7 +124,8 @@ local function applyLordHighlight(zombie)
     return colorOk and flagOk
 end
 
-local function updateLordLight(zombie)
+local function updateLordLight(zombie, glow)
+    glow = glow or LORD_GLOW
     local x = math.floor(zombie:getX())
     local y = math.floor(zombie:getY())
     local z = math.floor(zombie:getZ())
@@ -129,7 +135,7 @@ local function updateLordLight(zombie)
     removeLordLight(zombie)
 
     return pcall(function()
-        local light = IsoLightSource.new(x, y, z, LORD_GLOW_R, LORD_GLOW_G, LORD_GLOW_B, LORD_GLOW_RADIUS)
+        local light = IsoLightSource.new(x, y, z, glow.r, glow.g, glow.b, LORD_GLOW_RADIUS)
         getCell():addLamppost(light)
         lordLights[zombie] = { light = light, x = x, y = y, z = z }
     end)
@@ -170,18 +176,32 @@ local function scanForLords(player)
 
         for i = 0, list:size() - 1 do
             local zombie = list:get(i)
-            if zombie and not zombie:isDead() and zombie:getModData()[Keys.IS_LORD] then
-                if glowEnabled then
-                    seen[zombie] = true
-                    diagnoseGlow(zombie)
-                    applyLordHighlight(zombie)
-                    updateLordLight(zombie)
+            if zombie and not zombie:isDead() then
+                local md = zombie:getModData()
+                local isLord = md[Keys.IS_LORD] == true
+                local isMini = md[Keys.MINI_TYPE] ~= nil
+                -- A chosen playing dead must LOOK dead: no glow, no
+                -- highlight, until the ambush springs. The cleanup pass
+                -- below removes its light because it isn't in `seen`.
+                if isMini then
+                    pcall(function() if zombie:isFakeDead() then isMini = false end end)
                 end
-                if lordWarningCooldownTicks <= 0 then
-                    local dx, dy = zombie:getX() - px, zombie:getY() - py
-                    if (dx * dx + dy * dy) <= warnRadiusSq then
-                        announce(player, "Something huge is commanding the dead nearby...")
-                        lordWarningCooldownTicks = LORD_WARNING_COOLDOWN_SCANS
+                if isLord or isMini then
+                    if glowEnabled then
+                        seen[zombie] = true
+                        diagnoseGlow(zombie)
+                        local glow = isLord and LORD_GLOW or MINI_GLOW
+                        applyLordHighlight(zombie, glow)
+                        updateLordLight(zombie, glow)
+                    end
+                    -- The proximity dread is reserved for the throne; the
+                    -- chosen announce themselves by silhouette and glow.
+                    if isLord and lordWarningCooldownTicks <= 0 then
+                        local dx, dy = zombie:getX() - px, zombie:getY() - py
+                        if (dx * dx + dy * dy) <= warnRadiusSq then
+                            announce(player, "Something huge is commanding the dead nearby...")
+                            lordWarningCooldownTicks = LORD_WARNING_COOLDOWN_SCANS
+                        end
                     end
                 end
             end

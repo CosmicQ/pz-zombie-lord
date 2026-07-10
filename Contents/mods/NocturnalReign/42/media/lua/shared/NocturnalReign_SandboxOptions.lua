@@ -44,6 +44,7 @@ local DEFAULTS = {
     EnableZoneLords                    = true,
     ZoneLordRespawnDays                 = 0,
     LiberationCalmsNight                 = true,
+    EnableMiniBosses                      = true,
 }
 
 --- Reads a single option live from SandboxVars every call (rather than
@@ -85,6 +86,7 @@ function Options.isLordDoorUseEnabled()              return readOption("EnableLo
 function Options.isZoneLordsEnabled()               return readOption("EnableZoneLords") end
 function Options.getZoneLordRespawnDays()            return readOption("ZoneLordRespawnDays") end
 function Options.isLiberationCalmsNightEnabled()      return readOption("LiberationCalmsNight") end
+function Options.isMiniBossesEnabled()                 return readOption("EnableMiniBosses") end
 
 function Options.isHordeSummonEnabled()             return readOption("EnableHordeSummon") end
 function Options.getHordeSummonCooldownDays()        return readOption("HordeSummonCooldownDays") end
@@ -121,4 +123,7 @@ NocturnalReign.ModDataKeys = {
     COMMANDED_BY_LORD  = "NR_CommandedByLord",
     LAST_SUMMON_DAY     = "NR_LastSummonDay",
     LORD_ZONE            = "NR_LordZone",
+    MINI_TYPE             = "NR_MiniBossType",
+    SPAWN_HEALTH          = "NR_BossSpawnHealth",
+    FEIGN_USED             = "NR_FeignDeathUsed",
 }

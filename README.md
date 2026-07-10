@@ -64,6 +64,21 @@ Every major town is the domain of its own named Lord — the first phase of a bo
 - **Tier-scaled fights.** Higher-tier towns host tougher Lords (+25% health per tier above 1).
 - **Liberation.** Slay a town's Lord and the town is freed: its zombies stop mutating into night sprinters (toggleable), permanently — or until the Lord respawns, if you enable a respawn timer. Liberation state persists in the save.
 
+### ⚔️ The Lord's Chosen (Mini-Bosses)
+
+Towns of tier 2 and above are also guarded by the Lord's court — one fewer chosen than the town's tier, so Rosewood is a clean duel while Louisville fields the Lord and three lieutenants:
+
+| Chosen | Look | Its power |
+|---|---|---|
+| **The Shepherd** | Priest's cassock | Gathers and commands the escort pack |
+| **The Herald** | Cultist's hood | Broadcasts your position to the horde |
+| **The Gravedigger** | Scarecrow's rags | Raises corpses back into the fight |
+| **The Brute** | Spiked armour | Nothing clever — it's the Lord's bulwark, and very hard to put down |
+
+Every chosen you slay **strips that power from the town's Lord**: kill the Herald and the Lord can no longer call the swarm onto you; kill the Gravedigger and the dead stay dead; kill the Brute and the Lord rises without its tier health bonus. Powers default ON — the chosen are strategic prep, not a gate. Thin the court first, or rush the throne at full strength: your call. Mini-bosses glow ember-amber (Lords glow blood-red) and each drops one bundle of boss loot.
+
+And don't trust a chosen that goes down easy: once per life, a chosen dropped to half health or knocked off its feet **feigns death** — the glow goes dark, it lies among the corpses, and it waits for you to come loot it.
+
 Every timing, damage, chance, and radius value above is exposed in [Sandbox Options](#sandbox-options).
 
 ## Installation

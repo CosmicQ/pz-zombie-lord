@@ -78,4 +78,7 @@ Sandbox_EN = {
 
     Sandbox_NocturnalReign_LiberationCalmsNight = "Liberation Calms the Night",
     Sandbox_NocturnalReign_LiberationCalmsNight_tooltip = "While a town's Lord is slain, zombies inside that town no longer mutate into sprinters at night - the town is genuinely reclaimed. Disable to keep the nightfall mutation everywhere regardless of liberation.",
+
+    Sandbox_NocturnalReign_EnableMiniBosses = "Enable Mini-Bosses",
+    Sandbox_NocturnalReign_EnableMiniBosses_tooltip = "Higher-tier towns are also guarded by the Lord's chosen (one fewer than the town's tier): the Shepherd, the Herald, the Gravedigger, and the Brute. Each carries one of the Lord's powers and strips it from that town's Lord when slain - thin the court before the throne fight, or rush the Lord at full strength.",
 }
