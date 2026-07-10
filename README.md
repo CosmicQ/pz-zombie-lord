@@ -50,9 +50,19 @@ A rare alpha predator (default: 0.5% of zombies) that plays by its own rules:
 - **A pack leader.** It silently calls every zombie it passes into a loose escort formation, arriving with a horde in tow.
 - **A coordinator.** The moment it spots you, it broadcasts your position to every zombie in a wide radius — the whole pack converges at once.
 - **It calls the fog.** While a Lord is engaged, thick fog rolls in and shields its horde from the sun; the pack fights at full nighttime ferocity until it lifts.
-- **It opens doors.** Unlocked doors don't stop it — it turns the knob and walks in. Locked and barricaded doors still hold.
+- **It opens doors.** Unlocked doors don't stop it — it turns the knob and walks in. Locked and barricaded doors still hold. *(Dormant on builds without a per-zombie cognition API, including 42.19 — re-activates automatically when the game exposes one.)*
 - **It raises the dead.** Once per day (configurable), an engaged Lord resurrects nearby corpses back into the fight at reduced health.
 - **A boss fight, not a speed bump.** 10× health by default (instant-kill criticals still work), and its corpse carries rare high-value loot — plus its full regalia as lootable trophies.
+
+### 🏰 Territorial Lords & Liberation
+
+Every major town is the domain of its own named Lord — the first phase of a boss-progression campaign across the map:
+
+- **12 built-in territories** spanning the Build 42 map, tiered 1–4 by difficulty: start in Rosewood or Riverside, work up through Muldraugh and West Point, and face the endgame in Louisville.
+- **The Lord rises on arrival.** Enter a town whose Lord is unslain and it spawns somewhere out of sight, then starts stalking.
+- **Leashed to its domain.** A territorial Lord hunts within (and slightly beyond) its town's borders and walks home rather than being kited across the map. The classic free-roaming Lord still haunts the wilderness between towns.
+- **Tier-scaled fights.** Higher-tier towns host tougher Lords (+25% health per tier above 1).
+- **Liberation.** Slay a town's Lord and the town is freed: its zombies stop mutating into night sprinters (toggleable), permanently — or until the Lord respawns, if you enable a respawn timer. Liberation state persists in the save.
 
 Every timing, damage, chance, and radius value above is exposed in [Sandbox Options](#sandbox-options).
 

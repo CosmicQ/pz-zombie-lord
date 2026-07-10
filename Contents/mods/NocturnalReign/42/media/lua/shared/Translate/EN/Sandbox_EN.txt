@@ -53,7 +53,7 @@ Sandbox_EN = {
     Sandbox_NocturnalReign_EnableLordGlow_tooltip = "Zombie Lords are tinted blood-red and cast an eerie red light around themselves, so they stand out from the horde at a glance.",
 
     Sandbox_NocturnalReign_EnableLordDoorUse = "Zombie Lord Opens Doors",
-    Sandbox_NocturnalReign_EnableLordDoorUse_tooltip = "Zombie Lords navigate intelligently and open unlocked doors instead of battering them, regardless of the world's zombie Cognition lore. Locked and barricaded doors still stop them.",
+    Sandbox_NocturnalReign_EnableLordDoorUse_tooltip = "Zombie Lords navigate intelligently and open unlocked doors instead of battering them, regardless of the world's zombie Cognition lore. Locked and barricaded doors still stop them. NOTE: requires a game build that exposes a per-zombie cognition API - Build 42.19 does not, so this option is dormant there.",
 
     Sandbox_NocturnalReign_EnableHordeSummon = "Enable Raise the Dead",
     Sandbox_NocturnalReign_EnableHordeSummon_tooltip = "Allows a Zombie Lord to resurrect nearby corpses into fresh zombies once its cooldown is up.",
@@ -69,4 +69,13 @@ Sandbox_EN = {
 
     Sandbox_NocturnalReign_HordeSummonRadius = "Raise the Dead Radius (tiles)",
     Sandbox_NocturnalReign_HordeSummonRadius_tooltip = "Radius around a Zombie Lord searched for corpses to resurrect.",
+
+    Sandbox_NocturnalReign_EnableZoneLords = "Enable Territorial Lords",
+    Sandbox_NocturnalReign_EnableZoneLords_tooltip = "Each major town is the domain of its own Zombie Lord, which rises when a survivor enters and grows stronger with the town's difficulty tier. Slaying it liberates the town. Random roaming Lords still appear in the wilderness between towns.",
+
+    Sandbox_NocturnalReign_ZoneLordRespawnDays = "Territorial Lord Respawn (days)",
+    Sandbox_NocturnalReign_ZoneLordRespawnDays_tooltip = "In-game days before a slain town's Lord rises again and the town falls back under its reign. 0 means a liberated town stays liberated forever.",
+
+    Sandbox_NocturnalReign_LiberationCalmsNight = "Liberation Calms the Night",
+    Sandbox_NocturnalReign_LiberationCalmsNight_tooltip = "While a town's Lord is slain, zombies inside that town no longer mutate into sprinters at night - the town is genuinely reclaimed. Disable to keep the nightfall mutation everywhere regardless of liberation.",
 }

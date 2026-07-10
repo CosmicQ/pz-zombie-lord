@@ -68,3 +68,12 @@ option NocturnalReign.HordeSummonHealthPercent
 
 option NocturnalReign.HordeSummonRadius
 {type = integer, min = 5, max = 50, default = 25, page = NocturnalReign, translation = NocturnalReign_HordeSummonRadius,}
+
+option NocturnalReign.EnableZoneLords
+{type = boolean, default = true, page = NocturnalReign, translation = NocturnalReign_EnableZoneLords,}
+
+option NocturnalReign.ZoneLordRespawnDays
+{type = integer, min = 0, max = 365, default = 0, page = NocturnalReign, translation = NocturnalReign_ZoneLordRespawnDays,}
+
+option NocturnalReign.LiberationCalmsNight
+{type = boolean, default = true, page = NocturnalReign, translation = NocturnalReign_LiberationCalmsNight,}

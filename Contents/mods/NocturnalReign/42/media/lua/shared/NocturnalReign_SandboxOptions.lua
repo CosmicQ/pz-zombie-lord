@@ -41,6 +41,9 @@ local DEFAULTS = {
     HordeSummonMaxZombies               = 20,
     HordeSummonHealthPercent             = 50,
     HordeSummonRadius                     = 25,
+    EnableZoneLords                    = true,
+    ZoneLordRespawnDays                 = 0,
+    LiberationCalmsNight                 = true,
 }
 
 --- Reads a single option live from SandboxVars every call (rather than
@@ -79,6 +82,10 @@ function Options.getLordSeekRadius()                 return readOption("LordSeek
 function Options.isLordGlowEnabled()                 return readOption("EnableLordGlow") end
 function Options.isLordDoorUseEnabled()              return readOption("EnableLordDoorUse") end
 
+function Options.isZoneLordsEnabled()               return readOption("EnableZoneLords") end
+function Options.getZoneLordRespawnDays()            return readOption("ZoneLordRespawnDays") end
+function Options.isLiberationCalmsNightEnabled()      return readOption("LiberationCalmsNight") end
+
 function Options.isHordeSummonEnabled()             return readOption("EnableHordeSummon") end
 function Options.getHordeSummonCooldownDays()        return readOption("HordeSummonCooldownDays") end
 function Options.getHordeSummonMaxZombies()          return readOption("HordeSummonMaxZombies") end
@@ -113,4 +120,5 @@ NocturnalReign.ModDataKeys = {
     LAST_BURN_TICK    = "NR_LastBurnTick",
     COMMANDED_BY_LORD  = "NR_CommandedByLord",
     LAST_SUMMON_DAY     = "NR_LastSummonDay",
+    LORD_ZONE            = "NR_LordZone",
 }

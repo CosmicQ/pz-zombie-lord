@@ -84,7 +84,7 @@ end
 ----------------------------------------------------------------------------
 
 local LORD_GLOW_R, LORD_GLOW_G, LORD_GLOW_B = 0.9, 0.08, 0.08
-local LORD_GLOW_RADIUS = 6 -- tiles of red light around the Lord
+local LORD_GLOW_RADIUS = 8 -- tiles of red light around the Lord (subtle by day, striking at night)
 
 -- [zombie] = { light = IsoLightSource, x, y, z } for every currently-glowing
 -- Lord. Strong keys on purpose: entries are removed explicitly by the scan's
@@ -103,13 +103,20 @@ end
 --- Both cosmetic setters probed in two signature forms, same philosophy as
 --- the server's trySetters: B42 unstable has shuffled overloads before, and
 --- a silently-skipped tint beats a hard error in a render-path callback.
+--- Returns whether any form took, for the one-time diagnostic below -
+--- Kahlua swallows pure-Lua errors inside pcall without logging, so a
+--- broken cosmetic looks like "the Lord looks normal" with a clean console
+--- unless we print a receipt ourselves.
 local function applyLordHighlight(zombie)
-    if not pcall(function() zombie:setHighlightColor(1.0, 0.15, 0.15, 0.7) end) then
-        pcall(function() zombie:setHighlightColor(ColorInfo.new(1.0, 0.15, 0.15, 0.7)) end)
+    local colorOk = pcall(function() zombie:setHighlightColor(1.0, 0.1, 0.1, 1.0) end)
+    if not colorOk then
+        colorOk = pcall(function() zombie:setHighlightColor(ColorInfo.new(1.0, 0.1, 0.1, 1.0)) end)
     end
-    if not pcall(function() zombie:setHighlighted(true) end) then
-        pcall(function() zombie:setHighlighted(true, false) end)
+    local flagOk = pcall(function() zombie:setHighlighted(true) end)
+    if not flagOk then
+        flagOk = pcall(function() zombie:setHighlighted(true, false) end)
     end
+    return colorOk and flagOk
 end
 
 local function updateLordLight(zombie)
@@ -118,14 +125,29 @@ local function updateLordLight(zombie)
     local z = math.floor(zombie:getZ())
 
     local entry = lordLights[zombie]
-    if entry and entry.x == x and entry.y == y and entry.z == z then return end
+    if entry and entry.x == x and entry.y == y and entry.z == z then return true end
     removeLordLight(zombie)
 
-    pcall(function()
+    return pcall(function()
         local light = IsoLightSource.new(x, y, z, LORD_GLOW_R, LORD_GLOW_G, LORD_GLOW_B, LORD_GLOW_RADIUS)
         getCell():addLamppost(light)
         lordLights[zombie] = { light = light, x = x, y = y, z = z }
     end)
+end
+
+-- Printed once per session, the first time the glow is applied to a Lord.
+local glowDiagnosed = false
+
+local function diagnoseGlow(zombie)
+    if glowDiagnosed then return end
+    glowDiagnosed = true
+    print(string.format(
+        "[NocturnalReign] glow diagnostics: highlight=%s, light=%s, IsoLightSource=%s, ColorInfo=%s",
+        tostring(applyLordHighlight(zombie)),
+        tostring(updateLordLight(zombie)),
+        tostring(IsoLightSource ~= nil),
+        tostring(ColorInfo ~= nil)
+    ))
 end
 
 --- One pass over the loaded cell's zombies: apply the glow to every Lord,
@@ -151,6 +173,7 @@ local function scanForLords(player)
             if zombie and not zombie:isDead() and zombie:getModData()[Keys.IS_LORD] then
                 if glowEnabled then
                     seen[zombie] = true
+                    diagnoseGlow(zombie)
                     applyLordHighlight(zombie)
                     updateLordLight(zombie)
                 end

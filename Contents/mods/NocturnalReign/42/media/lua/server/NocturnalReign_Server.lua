@@ -34,17 +34,24 @@
 ]]
 
 require "NocturnalReign_SandboxOptions"
+require "NocturnalReign_Zones"
 
 NocturnalReign = NocturnalReign or {}
 NocturnalReign.Server = NocturnalReign.Server or {}
 local Server = NocturnalReign.Server
 local Options = NocturnalReign.Options
 local Keys = NocturnalReign.ModDataKeys
+local Zones = NocturnalReign.Zones
 
 -- Weak-keyed so an entry is dropped automatically once its zombie is no
 -- longer referenced elsewhere (removed/reaped/despawned), instead of us
 -- having to remember to clean up manually every time a Lord dies.
 Server.lords = setmetatable({}, { __mode = "k" })
+
+-- zoneName -> the zone's live territorial Lord (Module 4). Weak *values*
+-- for the same reason Server.lords is weak-keyed: a despawned/reaped Lord
+-- drops out on its own, and liveZoneLord() re-validates whatever remains.
+Server.zoneLords = setmetatable({}, { __mode = "v" })
 
 ----------------------------------------------------------------------------
 -- Small utility: try a list of candidate setter names on `obj` until one of
@@ -77,6 +84,40 @@ end
 
 local function isZombieLord(zombie)
     return zombie:getModData()[Keys.IS_LORD] == true
+end
+
+----------------------------------------------------------------------------
+-- Persistent campaign state: one record per zone.
+--
+-- Server.lords / Server.zoneLords above are in-memory only - live IsoZombie
+-- references can't outlive a session. What must survive saves is the
+-- *campaign*: which towns' Lords have been slain, and when. That lives in
+-- the global ModData store (server-authoritative, persisted with the save),
+-- keyed by zone name from NocturnalReign_Zones.lua.
+----------------------------------------------------------------------------
+
+local function getZoneRecord(zoneName)
+    local store = ModData.getOrCreate("NocturnalReign")
+    store.zones = store.zones or {}
+    store.zones[zoneName] = store.zones[zoneName] or {}
+    return store.zones[zoneName]
+end
+
+--- World age in whole days: monotonic across month boundaries and save
+--- reloads (unlike getDay(), which wraps) - same rationale as the Raise
+--- the Dead cooldown in Module 3.
+local function currentDay()
+    return math.floor(getGameTime():getWorldAgeHours() / 24)
+end
+
+--- A zone is liberated while its Lord lies slain and (if respawn is
+--- enabled) the respawn clock hasn't run out. ZoneLordRespawnDays = 0
+--- makes liberation permanent.
+local function isZoneLiberated(zoneName)
+    local record = getZoneRecord(zoneName)
+    if record.lordSlainDay == nil then return false end
+    local respawnDays = Options.getZoneLordRespawnDays()
+    return respawnDays <= 0 or (currentDay() - record.lordSlainDay) < respawnDays
 end
 
 ----------------------------------------------------------------------------
@@ -268,7 +309,7 @@ end
 -- (42.19 has no crown or cape item; the skeleton mask and BlackRobe are the
 -- closest vanilla equivalents.) Bump the version string whenever this list
 -- changes: already-dressed Lords compare against it and re-dress themselves.
-local LORD_ATTIRE_VERSION = "bone-king-2"
+local LORD_ATTIRE_VERSION = "bone-king-4" -- bumped to force a re-dress + dressing receipt on Lords from earlier saves
 local LORD_ATTIRE = {
     "Base.Hat_HalloweenMaskSkeleton", -- skull face
     "Base.BlackRobe",                 -- flowing black robe (cloak stand-in)
@@ -297,21 +338,57 @@ function Server.ensureLordOutfit(zombie)
     -- Strip whatever it died in (including a previous attire version) so
     -- the regalia reads clean.
     pcall(function() zombie:getWornItems():clear() end)
+
+    -- THE MODEL IS THE OUTFIT: a B42 zombie renders from its named outfit
+    -- (skinnedmodel/population Outfit), NOT from worn inventory items -
+    -- proven in QA (9/9 setWornItem successes, zero visual change) and by
+    -- the vanilla tutorial, which dresses its scripted zombies with
+    -- dressInNamedOutfit. ArmorTest_Bone is 42.19's shipped bone-armour
+    -- set; it appears male-only in clothing.xml (the engine logs "Could
+    -- not find outfit" and no-ops for the missing sex), so Cultist -
+    -- black hooded robes, defined for both sexes - is the fallback
+    -- regalia. getOutfitName() is the verification that a dress actually
+    -- took, since Kahlua swallows pure-Lua failures inside pcall silently.
+    local outfitWorn = "none"
+    for _, outfitName in ipairs({ "ArmorTest_Bone", "Cultist" }) do
+        if pcall(function() zombie:dressInNamedOutfit(outfitName) end) then
+            local current = nil
+            pcall(function() current = zombie:getOutfitName() end)
+            if current == outfitName then
+                outfitWorn = outfitName
+                break
+            end
+        end
+    end
+
+    -- The worn-item regalia does not render (see above) but still earns
+    -- its keep: it rides in the Lord's inventory/worn list and drops as
+    -- lootable trophies with the corpse. Receipts on every step, because
+    -- a silent failure here looks identical to "working" in the console.
+    local worn, failures = 0, {}
     for _, itemId in ipairs(LORD_ATTIRE) do
-        pcall(function()
+        local ok, err = pcall(function()
             -- Created via the zombie's own inventory rather than
             -- InventoryItemFactory: that class is not exposed to the
             -- server-side Lua sandbox (verified the hard way - it indexes
             -- as nil there), while getInventory():AddItem works in every
-            -- context. Side benefit: the regalia rides in the Lord's
-            -- inventory, so it drops as lootable trophies with the corpse.
+            -- context.
             local item = zombie:getInventory():AddItem(itemId)
-            if item then
-                zombie:setWornItem(item:getBodyLocation(), item)
-            end
+            if item == nil then error("AddItem returned nil") end
+            zombie:setWornItem(item:getBodyLocation(), item)
+            worn = worn + 1
         end)
+        if not ok then
+            table.insert(failures, string.format("%s (%s)", itemId, tostring(err)))
+        end
     end
-    pcall(function() zombie:resetModelNextFrame() end)
+    local modelReset = pcall(function() zombie:resetModelNextFrame() end)
+
+    print(string.format(
+        "[NocturnalReign] Lord dressing: outfit=%s, %d/%d trophy items worn (modelReset=%s)%s",
+        outfitWorn, worn, #LORD_ATTIRE, tostring(modelReset),
+        #failures > 0 and (" FAILED: " .. table.concat(failures, ", ")) or ""
+    ))
 end
 
 --- The Lord's bearing: everything about *how* it moves, re-assertable.
@@ -332,19 +409,42 @@ end
 ---   `-1` means "defer to the sandbox lore setting", i.e. what every
 ---   normal zombie carries - assigning it when the toggle is off means
 ---   flipping the option mid-game genuinely reverts existing Lords.
+---
+---   HOWEVER: the field is not *writable* from Lua on 42.19. Kahlua
+---   rejects raw field writes on Java objects (KahluaThread.tableSet
+---   throws "attempted index of non-table"), and neither IsoZombie nor
+---   its parents ship a setCognition method (verified against the jar's
+---   class files after QA caught the throw). Worse, PZ logs every
+---   exception a pcall swallows and lights the on-screen error icon, so
+---   re-attempting a known-failing write once per Lord-tick floods
+---   console.txt. Hence: setter probe only (trySetters skips missing
+---   methods silently), tried until the first verdict and then never
+---   again on a build without the API. Door-use lies dormant today and
+---   starts working the moment a build exposes the setter.
+
+-- nil = not yet probed this session; false = probed, build lacks the API.
+local cognitionSupported = nil
+
 local function applyLordBearing(zombie)
     trySetters(zombie, { "setSpeedType", "setZombieSpeedType" }, 0)
     zombie:setRunning(false)
 
+    if cognitionSupported == false then return end
     local cognition = Options.isLordDoorUseEnabled() and 1 or -1
-    -- Raw field write first (the documented modding route for per-zombie
-    -- lore stats); setter probe as the fallback, per the B42 API note.
-    if not pcall(function() zombie.cognition = cognition end) then
-        trySetters(zombie, { "setCognition" }, cognition)
+    local worked = trySetters(zombie, { "setCognition" }, cognition) ~= nil
+    if cognitionSupported == nil then
+        cognitionSupported = worked
+        if not worked then
+            print("[NocturnalReign] This build exposes no per-zombie cognition API; Lords cannot open doors (all other Lord behaviour is unaffected).")
+        end
     end
 end
 
-function Server.promoteToZombieLord(zombie)
+--- `zone` is optional: nil promotes a free-roaming wilderness Lord (the
+--- original behaviour); passing a zone table from NocturnalReign_Zones
+--- binds the Lord to that territory - tier-scaled health, leashed AI in
+--- lordUpdate, and liberation bookkeeping when it dies.
+function Server.promoteToZombieLord(zombie, zone)
     local md = zombie:getModData()
     md[Keys.IS_LORD] = true
 
@@ -354,14 +454,25 @@ function Server.promoteToZombieLord(zombie)
     -- prevent instant-kill crits (jaw stabs etc.) - those are engine
     -- mechanics; the multiplier mainly makes the Lord shrug off gunfire
     -- and blunt swings.
-    zombie:setHealth(zombie:getHealth() * Options.getLordHealthMultiplier())
+    --
+    -- A territorial Lord additionally gains +25% per zone tier above 1, so
+    -- the Lord of Louisville is a meaningfully harder fight than the Lord
+    -- of Rosewood while both still respect the sandbox multiplier.
+    local multiplier = Options.getLordHealthMultiplier()
+    if zone then
+        multiplier = multiplier * (1 + 0.25 * (zone.tier - 1))
+        md[Keys.LORD_ZONE] = zone.name
+        Server.zoneLords[zone.name] = zombie
+    end
+    zombie:setHealth(zombie:getHealth() * multiplier)
 
     Server.ensureLordOutfit(zombie)
     applyLordBearing(zombie)
 
     Server.lords[zombie] = true
     print(string.format(
-        "[NocturnalReign] A Zombie Lord has risen at (%d, %d, %d).",
+        "[NocturnalReign] %s has risen at (%d, %d, %d).",
+        zone and ("The Lord of " .. zone.name) or "A Zombie Lord",
         zombie:getX(), zombie:getY(), zombie:getZ()
     ))
 end
@@ -375,6 +486,12 @@ local function initZombieIfNeeded(zombie)
     md[Keys.INITIALIZED] = true
 
     if not Options.isZombieLordEnabled() then return end
+
+    -- Inside a named territory the Lord is managed - exactly one per town,
+    -- spawned on approach by Module 4 - so the random roll only applies in
+    -- the wilderness between towns. Otherwise towns would accumulate
+    -- random extra Lords on top of their territorial one.
+    if Options.isZoneLordsEnabled() and Zones.zoneAt(zombie:getX(), zombie:getY()) then return end
 
     -- ZombRand is the engine's own RNG helper (as opposed to math.random),
     -- used here for consistency with the rest of the codebase's zombie
@@ -436,7 +553,9 @@ local function findNearbyCorpses(cell, lx, ly, lz, radius, maxCount)
     return found
 end
 
---- Attempts to spawn one live IsoZombie on `square` at `healthFrac` health.
+--- Attempts to spawn one live IsoZombie on `square` at `healthFrac` health
+--- (nil = leave the engine-rolled health untouched, e.g. for a fresh
+--- territorial Lord that is about to get the boss multiplier applied).
 ---
 --- Primary path is the global addZombiesInOutfit(x, y, z, count, outfit,
 --- femaleChance) - the same helper vanilla and many long-lived mods use to
@@ -444,14 +563,14 @@ end
 --- sync internally and has been stable since B41. Only if that global is
 --- somehow absent do we fall back to hand-rolling an IsoZombie; see the
 --- CONFIDENCE NOTE above the module header.
-local function spawnZombieAt(cell, square, healthFrac)
+local function spawnZombieAt(cell, square, healthFrac, outfit, femaleChance)
     local x, y, z = square:getX(), square:getY(), square:getZ()
 
     if type(addZombiesInOutfit) == "function" then
-        local ok, spawned = pcall(addZombiesInOutfit, x, y, z, 1, nil, 50)
+        local ok, spawned = pcall(addZombiesInOutfit, x, y, z, 1, outfit, femaleChance or 50)
         if ok and spawned and spawned:size() > 0 then
             local zombie = spawned:get(0)
-            zombie:setHealth(healthFrac)
+            if healthFrac then zombie:setHealth(healthFrac) end
             return zombie
         end
         print("[NocturnalReign] addZombiesInOutfit failed, trying manual spawn fallback.")
@@ -468,7 +587,7 @@ local function spawnZombieAt(cell, square, healthFrac)
         zombie:setLx(fx)
         zombie:setLy(fy)
         zombie:setLz(z)
-        zombie:setHealth(healthFrac)
+        if healthFrac then zombie:setHealth(healthFrac) end
         cell:getZombieList():add(zombie)
         return zombie
     end)
@@ -586,6 +705,12 @@ end
 -- We additionally tag nearby standard zombies with a COMMANDED_BY_LORD flag
 -- purely as metadata (for UI/debugging/future features); it has no direct
 -- gameplay effect on its own.
+
+-- How far past its borders a territorial Lord will pursue prey before the
+-- leash pulls it home. Wide enough that skirting the town line isn't a
+-- cheese, narrow enough that a Lord can't be kited across the map.
+local ZONE_LEASH_MARGIN = 30
+
 local function lordUpdate(lordZombie)
     if lordZombie:isDead() then
         Server.lords[lordZombie] = nil
@@ -595,6 +720,14 @@ local function lordUpdate(lordZombie)
     -- Re-assert gait + cognition once a second; see applyLordBearing's
     -- doc comment for why this can't be set-once.
     applyLordBearing(lordZombie)
+
+    -- Territorial Lords (Module 4) are leashed to their zone; wilderness
+    -- Lords (zone == nil) keep the original unbounded stalk. A zone name
+    -- that no longer resolves (zone table changed between mod versions)
+    -- degrades gracefully to wilderness behaviour.
+    local zone = nil
+    local zoneName = lordZombie:getModData()[Keys.LORD_ZONE]
+    if zoneName then zone = Zones.byName(zoneName) end
 
     local lx, ly, lz = lordZombie:getX(), lordZombie:getY(), lordZombie:getZ()
     local commandRadius = Options.getLordCommandRadius()
@@ -642,9 +775,17 @@ local function lordUpdate(lordZombie)
         -- sight/sound check: the Lord always knows roughly where prey is
         -- and drifts that way, horde in tow, until the engine's normal
         -- senses acquire a real target and the branch above takes over.
+        -- A territorial Lord only senses prey inside its leash band.
         local prey = findClosestPlayer(lx, ly, Options.getLordSeekRadius())
+        if prey and zone and not Zones.containsWithMargin(zone, prey:getX(), prey:getY(), ZONE_LEASH_MARGIN) then
+            prey = nil
+        end
         if prey then
             pcall(function() lordZombie:pathToLocationF(prey:getX(), prey:getY(), prey:getZ()) end)
+        elseif zone and not Zones.containsWithMargin(zone, lx, ly, ZONE_LEASH_MARGIN) then
+            -- Out past the leash with nothing to hunt (kited, or drifted
+            -- after a fight): walk back to the heart of the domain.
+            pcall(function() lordZombie:pathToLocationF(zone.centerX + 0.5, zone.centerY + 0.5, 0) end)
         end
     end
 
@@ -772,37 +913,67 @@ end)
 ----------------------------------------------------------------------------
 -- MODULE 3d: Boss loot.
 --
--- A slain Zombie Lord's corpse carries serious rewards: two distinct rolls
+-- A slain Zombie Lord's corpse carries serious rewards: distinct rolls
 -- from the table below land in the zombie's inventory during OnZombieDead,
--- which the engine then transfers onto the corpse it creates. All item ids
--- verified against the 42.19 media/scripts definitions.
+-- which the engine then transfers onto the corpse it creates. A wilderness
+-- Lord drops 2 rolls; a territorial Lord drops 1 + its zone tier (so
+-- Rosewood pays out 2 bundles, Louisville 5) - killing a harder town's
+-- boss should FEEL like a bigger payday. All item ids verified against
+-- the 42.19 media/scripts definitions.
 ----------------------------------------------------------------------------
 
 local LORD_LOOT_TABLE = {
     { "Base.Katana" },
     { "Base.AssaultRifle", "Base.556Box", "Base.556Box" },
     { "Base.Shotgun", "Base.ShotgunShellsBox", "Base.ShotgunShellsBox" },
+    { "Base.HuntingRifle", "Base.308Box", "Base.308Box" },
     { "Base.Sledgehammer" },
-    { "Base.Machete", "Base.Bullets9mmBox" },
+    { "Base.Machete", "Base.HuntingKnife" },
+    { "Base.GoldBar", "Base.Necklace_Gold" },
+    { "Base.Bag_ALICEpack_Army", "Base.FirstAidKit", "Base.Antibiotics" },
 }
+
+local LORD_LOOT_BASE_ROLLS = 2
 
 local function onZombieDead(zombie)
     if isClient() then return end
+    local md = zombie:getModData()
+    if not md[Keys.IS_LORD] then return end
+
+    -- Liberation bookkeeping first, independent of the loot toggle: a
+    -- territorial Lord's death frees its town either way. The record (not
+    -- the zombie) is the campaign's source of truth, so this write is what
+    -- actually flips the zone to liberated.
+    local zoneName = md[Keys.LORD_ZONE]
+    if zoneName then
+        getZoneRecord(zoneName).lordSlainDay = currentDay()
+        print(string.format(
+            "[NocturnalReign] The Lord of %s has been slain - its town is liberated.",
+            zoneName
+        ))
+    end
+
     if not Options.isLordLootEnabled() then return end
-    if not zombie:getModData()[Keys.IS_LORD] then return end
 
     local inv = zombie:getInventory()
     if not inv then return end
 
-    -- Two distinct rolls so the drop always feels like a haul but never
-    -- duplicates (the classic "pick 2 of N without replacement" trick:
-    -- roll the second in a range one smaller and shift it past the first).
-    local first = ZombRand(#LORD_LOOT_TABLE) + 1
-    local second = ZombRand(#LORD_LOOT_TABLE - 1) + 1
-    if second >= first then second = second + 1 end
+    -- Roll count scales with the fallen Lord's domain: base rolls for a
+    -- wilderness Lord, 1 + zone tier for a territorial one. Distinct
+    -- bundles guaranteed by a partial Fisher-Yates shuffle of the table
+    -- indices - a corpse never pays the same bundle twice.
+    local rolls = LORD_LOOT_BASE_ROLLS
+    if zoneName then
+        local zone = Zones.byName(zoneName)
+        if zone then rolls = math.min(#LORD_LOOT_TABLE, 1 + zone.tier) end
+    end
 
-    for _, roll in ipairs({ first, second }) do
-        for _, itemId in ipairs(LORD_LOOT_TABLE[roll]) do
+    local indices = {}
+    for i = 1, #LORD_LOOT_TABLE do indices[i] = i end
+    for i = 1, rolls do
+        local j = i + ZombRand(#indices - i + 1)
+        indices[i], indices[j] = indices[j], indices[i]
+        for _, itemId in ipairs(LORD_LOOT_TABLE[indices[i]]) do
             pcall(function() inv:AddItem(itemId) end)
         end
     end
@@ -814,6 +985,149 @@ local function onZombieDead(zombie)
 end
 
 Events.OnZombieDead.Add(onZombieDead)
+
+----------------------------------------------------------------------------
+-- MODULE 4: Territorial Lords - one boss per town.
+--
+-- Every zone in NocturnalReign_Zones.lua is the domain of exactly one
+-- Zombie Lord. The persistent zone record (getZoneRecord, near the top of
+-- this file) is the campaign's source of truth: a zone whose Lord is
+-- unslain spawns it the first time a survivor walks in - necessarily
+-- on-approach, because zombies only exist in loaded cells, so "the Lord of
+-- Rosewood" cannot physically exist while nobody is near Rosewood. A slain
+-- zone stays liberated until the respawn clock (if any) runs out.
+--
+-- This module only manages existence. What a territorial Lord *does*
+-- differently - leashed stalking, tier-scaled health, liberation on death
+-- - lives in lordUpdate / promoteToZombieLord / onZombieDead above.
+----------------------------------------------------------------------------
+
+--- The zone's live Lord, or nil. Re-validates the weak reference: a Lord
+--- whose cell unloaded is no longer simulated (getCurrentSquare goes nil)
+--- and must not block a fresh spawn when players return later. Every
+--- method call is pcall-guarded because the reference can go stale between
+--- GC passes.
+local function liveZoneLord(zoneName)
+    local zombie = Server.zoneLords[zoneName]
+    if not zombie then return nil end
+    local ok, alive = pcall(function()
+        return not zombie:isDead() and zombie:getCurrentSquare() ~= nil
+    end)
+    if not ok or not alive then
+        Server.zoneLords[zoneName] = nil
+        return nil
+    end
+    return zombie
+end
+
+-- How far from the triggering player a zone Lord materialises: far enough
+-- to arrive from "somewhere out there" instead of popping into view, near
+-- enough that the grid squares are actually loaded and the stalk starts
+-- promptly.
+local ZONE_LORD_SPAWN_MIN_DIST = 35
+local ZONE_LORD_SPAWN_MAX_DIST = 55
+local ZONE_LORD_SPAWN_ATTEMPTS = 24
+
+local function findZoneLordSpawnSquare(cell, player, zone)
+    local px, py = player:getX(), player:getY()
+    for _ = 1, ZONE_LORD_SPAWN_ATTEMPTS do
+        local dist = ZONE_LORD_SPAWN_MIN_DIST
+            + ZombRand(ZONE_LORD_SPAWN_MAX_DIST - ZONE_LORD_SPAWN_MIN_DIST + 1)
+        local angle = ZombRand(360) * math.pi / 180
+        -- Clamped into the zone box so the Lord never has to cross its own
+        -- leash line just to exist. (Near a border this can land closer to
+        -- the player than the minimum distance - acceptable, it is still
+        -- outside immediate view in practice.)
+        local x = math.max(zone.x1, math.min(zone.x2, math.floor(px + math.cos(angle) * dist)))
+        local y = math.max(zone.y1, math.min(zone.y2, math.floor(py + math.sin(angle) * dist)))
+        local square = cell:getGridSquare(x, y, 0)
+        if square and square:isFree(false) and square:isOutside() then
+            return square
+        end
+    end
+    return nil -- nothing loaded/walkable this time; the next sweep retries
+end
+
+local function trySpawnZoneLord(cell, zone, player)
+    local square = findZoneLordSpawnSquare(cell, player, zone)
+    if not square then return false end
+
+    -- nil health: keep the engine-rolled base so the boss multiplier in
+    -- promoteToZombieLord scales off the same baseline a rolled Lord gets.
+    -- Spawned male in the bone-armour outfit directly: ArmorTest_Bone has
+    -- no female variant (see ensureLordOutfit), and dressing at spawn is
+    -- the engine's native path. ensureLordOutfit still runs at promotion
+    -- as the belt-and-suspenders for wilderness Lords and older saves.
+    local zombie = spawnZombieAt(cell, square, nil, "ArmorTest_Bone", 0)
+    if not zombie then return false end
+
+    zombie:getModData()[Keys.INITIALIZED] = true -- never re-roll the wilderness promotion
+    Server.promoteToZombieLord(zombie, zone)
+    return true
+end
+
+-- A Lord instance can be lost without dying: the player outruns it, its
+-- chunk unloads, and the engine virtualizes the zombie - liveZoneLord()
+-- then reports nothing even though the Lord still exists out there in the
+-- unloaded town. Replacing it instantly raised a fresh Lord every few
+-- minutes of normal play (observed in QA: three Lords of Rosewood in one
+-- session), so a lost Lord gets this grace window to be found again -
+-- either by its chunk reloading (the sweep re-registers it) or by it
+-- walking back into range - before a replacement rises. If the engine
+-- genuinely reaped it, the town heals itself after the grace expires
+-- rather than being stuck boss-less forever. Duplicates that do slip
+-- through are benign: every one carries the zone name, and any of their
+-- deaths liberates the town.
+local ZONE_LORD_REPLACE_GRACE_HOURS = 12
+
+--- Once per sweep: for every player standing inside a zone, make sure that
+--- zone's Lord exists if the campaign says it should.
+local function updateZoneLords(cell)
+    if not Options.isZombieLordEnabled() or not Options.isZoneLordsEnabled() then return end
+
+    local players = getAllPlayers()
+    if not players then return end
+
+    local nowHours = getGameTime():getWorldAgeHours()
+
+    for i = 0, players:size() - 1 do
+        local player = players:get(i)
+        if player and not player:isDead() then
+            local zone = Zones.zoneAt(player:getX(), player:getY())
+            if zone then
+                local record = getZoneRecord(zone.name)
+                if liveZoneLord(zone.name) then
+                    record.lordLastSeenHours = nowHours
+                else
+                    -- A slain Lord whose respawn clock has run out rises
+                    -- again: clearing the slain-day puts the town back
+                    -- under its reign and re-arms the spawn below.
+                    if record.lordSlainDay ~= nil and not isZoneLiberated(zone.name) then
+                        record.lordSlainDay = nil
+                        record.lordLastSeenHours = nil
+                    end
+                    local lostRecently = record.lordLastSeenHours ~= nil
+                        and (nowHours - record.lordLastSeenHours) < ZONE_LORD_REPLACE_GRACE_HOURS
+                    if record.lordSlainDay == nil and not lostRecently then
+                        if trySpawnZoneLord(cell, zone, player) then
+                            record.lordLastSeenHours = nowHours
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+--- Whether a zombie standing at (x, y) has its night mutation suppressed
+--- by a liberated town. Checked per zombie per sweep, so crossing a
+--- liberation border flips behaviour within a minute.
+local function isNightCalmedAt(x, y)
+    if not Options.isZoneLordsEnabled() then return false end
+    if not Options.isLiberationCalmsNightEnabled() then return false end
+    local zone = Zones.zoneAt(x, y)
+    return zone ~= nil and isZoneLiberated(zone.name)
+end
 
 ----------------------------------------------------------------------------
 -- Main population sweep (Modules 1 & 2) - once per in-game minute.
@@ -840,6 +1154,16 @@ local function mainSweep()
             tostring(Options.isDaytimeHour(getGameTime():getHour())),
             tostring(Options.getZombieLordSpawnChancePercent())
         ))
+        -- Where each tracked territorial Lord currently stands - a QA
+        -- beacon for finding a slow walker in a big town (positions move,
+        -- the one-time "has risen" line goes stale within minutes).
+        for zoneName, lord in pairs(Server.zoneLords) do
+            local ok, position = pcall(function()
+                return string.format("(%d, %d, %d)", lord:getX(), lord:getY(), lord:getZ())
+            end)
+            print(string.format("[NocturnalReign] the Lord of %s stands at %s",
+                zoneName, ok and position or "parts unknown"))
+        end
     end
 
     local hour = getGameTime():getHour()
@@ -870,8 +1194,21 @@ local function mainSweep()
                 -- Re-registering here (idempotent - it's just a table key)
                 -- is what revives a Lord's AI after a save reload: the
                 -- IS_LORD flag persists in ModData, but Server.lords is
-                -- in-memory only and starts empty every session.
+                -- in-memory only and starts empty every session. Same for
+                -- a territorial Lord's zone binding, or updateZoneLords
+                -- would spawn a duplicate over a Lord that merely survived
+                -- a reload.
                 Server.lords[zombie] = true
+                local lordZone = zombie:getModData()[Keys.LORD_ZONE]
+                if lordZone then
+                    Server.zoneLords[lordZone] = zombie
+                    -- Refresh the sighting clock whenever the Lord is in
+                    -- ANY loaded cell, not only while a player stands in
+                    -- its zone - otherwise the timestamp goes stale the
+                    -- moment players leave and a revisit hours later
+                    -- spawns a duplicate over a Lord that was never lost.
+                    getZoneRecord(lordZone).lordLastSeenHours = getGameTime():getWorldAgeHours()
+                end
                 Server.ensureLordOutfit(zombie)
             elseif sunThreat then
                 if photophobiaOn and isZombieInDirectSunlight(zombie) then
@@ -891,14 +1228,25 @@ local function mainSweep()
                 revertNightMutation(zombie)
             else
                 -- True night, or daytime under a fog shield: either way the
-                -- sun poses no threat and the horde runs at full ferocity.
+                -- sun poses no threat and the horde runs at full ferocity -
+                -- unless this zombie stands in a liberated town, whose
+                -- night stays calm.
                 revertPhotophobia(zombie)
-                if nightMutationOn then
+                if nightMutationOn and not isNightCalmedAt(zombie:getX(), zombie:getY()) then
                     applyNightMutation(zombie)
+                else
+                    revertNightMutation(zombie)
                 end
             end
         end
     end
+
+    -- Module 4 runs *after* the population loop on purpose: the loop above
+    -- is what re-registers a surviving territorial Lord into
+    -- Server.zoneLords after a save reload, and spawning must see that
+    -- registration or the first sweep of a session would raise a duplicate
+    -- Lord on top of one that merely got reloaded.
+    updateZoneLords(cell)
 end
 
 Events.EveryOneMinute.Add(mainSweep)
