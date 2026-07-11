@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Admin campaign reset** — a "Nocturnal Reign (Admin)" world right-click menu (admins/moderators in multiplayer, always available in single-player) that puts the current town — or every town — back under its Lord's reign: slain-day records for the Lord and its chosen are erased and the full court rises again on the next approach. The server re-validates the sender's access level; the client-side menu gate is UI only.
+
+### Fixed
+
+- Every server restart left every town boss-less for 12 in-game hours: the lost-boss grace window's sighting clock was persisted into the save, but restarts reap the live boss zombies it was vouching for (observed on the dedicated server — an entire session of sweeps with no Lord, hence no fog, no summon, no glow). The sighting clock is now in-memory and session-scoped, so bosses respawn as soon as a player enters town after a restart, while the within-session anti-duplicate grace still works exactly as before.
+
 ## [1.1.0] - 2026-07-11
 
 ### Added

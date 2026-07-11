@@ -60,6 +60,19 @@ Server.zoneLords = setmetatable({}, { __mode = "v" })
 -- diagnostics beacon prints it verbatim.
 Server.zoneMinis = setmetatable({}, { __mode = "v" })
 
+-- When each tracked boss was last confirmed alive (world-age hours), the
+-- clock behind the lost-boss grace window in Module 4. Deliberately
+-- in-memory and NOT persisted: the grace exists for mid-session chunk
+-- unloads (the boss probably still exists out there in an unloaded
+-- chunk), but a server restart reaps live zombies for good - persisting
+-- these timestamps meant every restart left every town boss-less until
+-- the stale grace expired, 12 in-game hours later (observed on the
+-- dedicated server: a whole session of sweeps with no boss rising).
+local lastSeen = {
+    lords = {}, -- zoneName -> hours
+    minis = {}, -- miniLabel -> hours
+}
+
 -- trySetters/tryGetters live in the shared mutation module now (the client's
 -- MP gait pass needs them too); see "B42 API NOTE" above for why they exist.
 local trySetters = Mutation.trySetters
@@ -1404,21 +1417,22 @@ local function ensureZoneBosses(cell, zone, player, nowHours)
 
     -- The throne first.
     if liveZoneLord(zone.name) then
-        record.lordLastSeenHours = nowHours
+        lastSeen.lords[zone.name] = nowHours
     else
         -- A slain Lord whose respawn clock has run out rises again:
         -- clearing the slain-day puts the town back under its reign, and
         -- the whole court returns with the throne (minis reset too).
         if record.lordSlainDay ~= nil and not isZoneLiberated(zone.name) then
             record.lordSlainDay = nil
-            record.lordLastSeenHours = nil
+            lastSeen.lords[zone.name] = nil
             record.minis = nil
         end
-        local lostRecently = record.lordLastSeenHours ~= nil
-            and (nowHours - record.lordLastSeenHours) < ZONE_LORD_REPLACE_GRACE_HOURS
+        local seenAt = lastSeen.lords[zone.name]
+        local lostRecently = seenAt ~= nil
+            and (nowHours - seenAt) < ZONE_LORD_REPLACE_GRACE_HOURS
         if record.lordSlainDay == nil and not lostRecently then
             if trySpawnZoneLord(cell, zone, player) then
-                record.lordLastSeenHours = nowHours
+                lastSeen.lords[zone.name] = nowHours
                 return
             end
         end
@@ -1432,14 +1446,16 @@ local function ensureZoneBosses(cell, zone, player, nowHours)
     for _, miniType in ipairs(zoneMiniRoster(zone.tier)) do
         local mini = record.minis[miniType] or {}
         record.minis[miniType] = mini
-        if liveTrackedBoss(Server.zoneMinis, miniLabel(zone.name, miniType)) then
-            mini.lastSeenHours = nowHours
+        local label = miniLabel(zone.name, miniType)
+        if liveTrackedBoss(Server.zoneMinis, label) then
+            lastSeen.minis[label] = nowHours
         elseif mini.slainDay == nil then
-            local lostRecently = mini.lastSeenHours ~= nil
-                and (nowHours - mini.lastSeenHours) < ZONE_LORD_REPLACE_GRACE_HOURS
+            local seenAt = lastSeen.minis[label]
+            local lostRecently = seenAt ~= nil
+                and (nowHours - seenAt) < ZONE_LORD_REPLACE_GRACE_HOURS
             if not lostRecently then
                 if trySpawnZoneMini(cell, zone, player, miniType) then
-                    mini.lastSeenHours = nowHours
+                    lastSeen.minis[label] = nowHours
                     return
                 end
             end
@@ -1477,6 +1493,74 @@ local function isNightCalmedAt(x, y)
     local zone = Zones.zoneAt(x, y)
     return zone ~= nil and isZoneLiberated(zone.name)
 end
+
+----------------------------------------------------------------------------
+-- MODULE 5: Admin campaign reset.
+--
+-- Liberation is meant to be earned once, but a long-running server needs a
+-- lever: an admin can put a liberated town (or the whole map) back under
+-- its Lord's reign. Clearing a zone's persistent record erases its
+-- slain-days (Lord and chosen alike) and its sighting grace, so the full
+-- court rises again the next time a survivor walks in.
+--
+-- Requests arrive as a client command from the context menu in
+-- NocturnalReign_Client.lua; the server re-checks the sender's access
+-- level itself - the client-side isAdmin() gate is a courtesy, not a
+-- boundary, since any client can emit arbitrary commands.
+----------------------------------------------------------------------------
+
+--- Reset one zone's campaign record, or every zone's when zoneName is nil.
+--- Also forgets live-boss tracking for the affected zones: a boss still
+--- alive is harmlessly re-registered by the next sweep, while a stale
+--- entry would otherwise block the respawn this reset exists to trigger.
+function Server.resetCampaign(zoneName)
+    local store = ModData.getOrCreate("NocturnalReign")
+    store.zones = store.zones or {}
+    if zoneName then
+        store.zones[zoneName] = nil
+        lastSeen.lords[zoneName] = nil
+        Server.zoneLords[zoneName] = nil
+        for _, miniType in ipairs(MINIBOSS_ORDER) do
+            local label = miniLabel(zoneName, miniType)
+            lastSeen.minis[label] = nil
+            Server.zoneMinis[label] = nil
+        end
+        print(string.format("[NocturnalReign] Campaign reset: %s returns to its Lord's reign.", zoneName))
+    else
+        store.zones = {}
+        lastSeen.lords = {}
+        lastSeen.minis = {}
+        for k in pairs(Server.zoneLords) do Server.zoneLords[k] = nil end
+        for k in pairs(Server.zoneMinis) do Server.zoneMinis[k] = nil end
+        print("[NocturnalReign] Campaign reset: every town returns to its Lord's reign.")
+    end
+end
+
+local function onClientCommand(module, command, playerObj, args)
+    if module ~= "NocturnalReign" or command ~= "resetCampaign" then return end
+
+    local access = ""
+    pcall(function() access = tostring(playerObj:getAccessLevel()):lower() end)
+    if access ~= "admin" and access ~= "moderator" then
+        local name = "?"
+        pcall(function() name = playerObj:getUsername() end)
+        print(string.format(
+            "[NocturnalReign] REFUSED campaign reset from %s (access level '%s').", name, access))
+        return
+    end
+
+    local zoneName = args and args.zone or nil
+    -- Validate against the zone table so a garbled/forged zone name can't
+    -- plant junk records in the campaign store.
+    if zoneName ~= nil and Zones.byName(zoneName) == nil then return end
+
+    Server.resetCampaign(zoneName)
+    pcall(function()
+        sendServerCommand(playerObj, "NocturnalReign", "resetDone", { zone = zoneName })
+    end)
+end
+
+Events.OnClientCommand.Add(onClientCommand)
 
 ----------------------------------------------------------------------------
 -- Main population sweep (Modules 1 & 2) - once per in-game minute.
@@ -1563,16 +1647,14 @@ local function mainSweep()
                 Server.lords[zombie] = true
                 local lordZone = zombie:getModData()[Keys.LORD_ZONE]
                 if lordZone then
-                    local record = getZoneRecord(lordZone)
                     local nowHours = getGameTime():getWorldAgeHours()
                     if miniType then
-                        Server.zoneMinis[miniLabel(lordZone, miniType)] = zombie
-                        record.minis = record.minis or {}
-                        record.minis[miniType] = record.minis[miniType] or {}
-                        record.minis[miniType].lastSeenHours = nowHours
+                        local label = miniLabel(lordZone, miniType)
+                        Server.zoneMinis[label] = zombie
+                        lastSeen.minis[label] = nowHours
                     else
                         Server.zoneLords[lordZone] = zombie
-                        record.lordLastSeenHours = nowHours
+                        lastSeen.lords[lordZone] = nowHours
                     end
                 end
                 if miniType then

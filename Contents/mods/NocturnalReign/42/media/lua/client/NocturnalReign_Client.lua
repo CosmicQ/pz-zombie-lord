@@ -321,6 +321,15 @@ end
 local function onServerCommand(module, command, args)
     if module ~= "NocturnalReign" then return end
     if command == "shriek" then return playShriek(args) end
+    if command == "resetDone" then
+        local player = getPlayer()
+        if player then
+            announce(player, (args and args.zone)
+                and (args.zone .. " returns to its Lord's reign.")
+                or "Every town returns to its Lord's reign.")
+        end
+        return
+    end
     if command ~= "state" then return end
     args = args or {}
 
@@ -369,6 +378,61 @@ local function onServerCommand(module, command, args)
 end
 
 Events.OnServerCommand.Add(onServerCommand)
+
+----------------------------------------------------------------------------
+-- Admin campaign reset (world right-click menu).
+--
+-- Puts a liberated town - or the whole map - back under its Lord's reign.
+-- Shown only to admins/moderators in multiplayer (the server re-validates
+-- the sender's access level; this gate is just UI hygiene) and always in
+-- single-player, where it's your own world. In MP the request travels as
+-- a client command; in SP the server module shares this Lua state and is
+-- called directly.
+----------------------------------------------------------------------------
+
+local function requestCampaignReset(zoneName)
+    if isClient() then
+        pcall(function()
+            sendClientCommand("NocturnalReign", "resetCampaign", { zone = zoneName })
+        end)
+    elseif NocturnalReign.Server and NocturnalReign.Server.resetCampaign then
+        NocturnalReign.Server.resetCampaign(zoneName)
+        local player = getPlayer()
+        if player then
+            announce(player, zoneName
+                and (zoneName .. " returns to its Lord's reign.")
+                or "Every town returns to its Lord's reign.")
+        end
+    end
+end
+
+local function onFillWorldObjectContextMenu(playerNum, context, worldObjects, test)
+    if test then return end
+    -- MP: admins and moderators only. SP: always available.
+    local allowed = isClient() and (isAdmin() or isModerator and isModerator()) or not isClient()
+    if not allowed then return end
+
+    pcall(function()
+        local player = getSpecificPlayer(playerNum)
+        if not player then return end
+
+        local option = context:addOption("Nocturnal Reign (Admin)", worldObjects, nil)
+        local subMenu = ISContextMenu:getNew(context)
+        context:addSubMenu(option, subMenu)
+
+        local zone = Zones.zoneAt(player:getX(), player:getY())
+        if zone then
+            subMenu:addOption("Reset bosses: " .. zone.name, nil, function()
+                requestCampaignReset(zone.name)
+            end)
+        end
+        subMenu:addOption("Reset bosses: ALL towns", nil, function()
+            requestCampaignReset(nil)
+        end)
+    end)
+end
+
+Events.OnFillWorldObjectContextMenu.Add(onFillWorldObjectContextMenu)
 
 local function onPlayerUpdate(player)
     if player ~= getPlayer() then return end -- ignore any non-local-player callback quirks
