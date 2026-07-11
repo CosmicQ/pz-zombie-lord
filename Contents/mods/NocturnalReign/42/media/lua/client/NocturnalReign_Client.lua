@@ -344,14 +344,27 @@ local function onServerCommand(module, command, args)
     end
 
     local fogOn = args.fog == true
-    if fogOn ~= remoteFog then
-        remoteFog = fogOn
-        local ok = applyFogOverride(fogOn)
-        -- Receipt on purpose: Kahlua swallows pure-Lua pcall failures
-        -- silently, and "the fog didn't show" is otherwise
-        -- indistinguishable from "the command never arrived".
-        print(string.format("[NocturnalReign] fog %s (server state, applied=%s)",
-            fogOn and "rolls in" or "lifts", tostring(ok)))
+    if fogOn then
+        -- Re-assert the override on EVERY packet while the fog holds, not
+        -- just on the transition: the engine's own MP climate sync stomps
+        -- client-side overrides between our packets (playtested - the
+        -- server's fog held while the client's visual faded within
+        -- seconds). Worst case the fog flickers for the sub-second gap
+        -- between a climate sync and our next state packet.
+        local ok = applyFogOverride(true)
+        if remoteFog ~= true then
+            remoteFog = true
+            -- Receipt on purpose: Kahlua swallows pure-Lua pcall failures
+            -- silently, and "the fog didn't show" is otherwise
+            -- indistinguishable from "the command never arrived".
+            print(string.format("[NocturnalReign] fog rolls in (server state, applied=%s)", tostring(ok)))
+        end
+    elseif remoteFog == nil then
+        remoteFog = false -- first packet of the session, nothing to undo
+    elseif remoteFog then
+        remoteFog = false
+        local ok = applyFogOverride(false)
+        print(string.format("[NocturnalReign] fog lifts (server state, applied=%s)", tostring(ok)))
     end
 end
 

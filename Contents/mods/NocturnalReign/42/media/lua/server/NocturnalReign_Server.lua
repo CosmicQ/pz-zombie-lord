@@ -588,11 +588,12 @@ end
 -- spawn with net-sync internally) and immediately put into the engine's
 -- fake-dead state: the same FakeDeadZombieState that drives the
 -- mini-bosses' feign death, in which the engine owns the sprawled-corpse
--- pose, the stillness, and the rise. The horde therefore surfaces lying
--- among the dead and gets UP out of the ground instead of popping into
--- existence - and since the Lord only casts this while engaged with a
--- player (see lordUpdate), its fog is already rolling in to hide whatever
--- little of the spawn-in moment remains visible.
+-- pose and the stillness. The rise is ours (pendingRisers below): each
+-- zombie is woken a staggered few seconds after the cast, so the horde
+-- surfaces lying among the dead and climbs up out of the ground instead
+-- of popping into existence - and since the Lord only casts this while
+-- engaged with a player (see lordUpdate), its fog is already rolling in
+-- to hide whatever little of the spawn-in moment remains visible.
 --
 -- (An earlier version consumed real IsoDeadBody corpses and spawned
 -- replacements 1:1. That leaned on the two least-standardized APIs in PZ
@@ -674,6 +675,34 @@ end
 -- this the spawn wave itself becomes the lag event, especially in MP.
 local HORDE_SUMMON_HARD_CAP = 60
 
+-- Summoned zombies do NOT rise on their own: the engine's fake-dead state
+-- breaks only on player proximity or damage - playtested, WorldSounds do
+-- not stir it, so a horde raised mid-firefight just lay there forever.
+-- The summoner therefore wakes each one itself (setFakeDead(false)) a few
+-- lord-ticks after the cast, individually staggered so the horde ripples
+-- up out of the earth over several seconds instead of standing in unison.
+local pendingRisers = {}
+
+local function queueRiser(zombie)
+    table.insert(pendingRisers, { zombie = zombie, ticksLeft = 2 + ZombRand(5) })
+end
+
+local function updateRisers()
+    for i = #pendingRisers, 1, -1 do
+        local entry = pendingRisers[i]
+        entry.ticksLeft = entry.ticksLeft - 1
+        if entry.ticksLeft <= 0 then
+            table.remove(pendingRisers, i)
+            -- A riser stomped while it lay is dead; leave it that way.
+            pcall(function()
+                if not entry.zombie:isDead() then
+                    entry.zombie:setFakeDead(false)
+                end
+            end)
+        end
+    end
+end
+
 --- The summoning shriek: MetaScream is the game's own blood-curdling
 --- scream (defined in 42.19's sounds_meta.txt with a 1000-tile range -
 --- it's the "someone screaming in the distance" meta event), and coming
@@ -733,10 +762,10 @@ local function summonHorde(lordZombie)
                 local zombie = spawnZombieAt(cell, square, healthFrac)
                 if zombie then
                     -- Born playing dead: FakeDeadZombieState owns the
-                    -- sprawl and the rise (see module doc comment). The
-                    -- rally sound below - and any survivor who comes close
-                    -- - is what stirs the risen to their feet.
+                    -- sprawl. The rise is on us - queueRiser wakes it a
+                    -- staggered few seconds from now (see pendingRisers).
                     pcall(function() zombie:setFakeDead(true) end)
+                    queueRiser(zombie)
                     local zmd = zombie:getModData()
                     zmd[Keys.COMMANDED_BY_LORD] = true
                     zmd[Keys.INITIALIZED] = true -- a summoned zombie should never itself re-roll into a new Lord
@@ -1144,6 +1173,7 @@ Events.OnTick.Add(function()
         end
     end
 
+    updateRisers()
     updateLordFog(anyLordInCombat)
     broadcastState()
 end)
